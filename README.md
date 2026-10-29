@@ -1,5 +1,5 @@
-# ORBITAL 分子工作室
+# ORBITAL 分子工作室 · v1.2.0
 
-三維分子編輯器，使用 RDKit 生成形狀，支援立體構型、孤電子對及共軛系統示意。
+RDKit 三維分子工作室。此提交包含已通過 105 項 Python 測試的計算服務；完整前端原始碼與本機版將接續上傳。
 
-原始碼整理與 v1.2.0 部署中。雲端計算服務使用 deploy/Dockerfile，私人網頁入口使用 Sites。
+Render：Docker，`deploy/Dockerfile`，根目錄建置；健康檢查 `/healthz`。請參閱 [部署說明](deploy/README.md)。

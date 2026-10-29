@@ -1,0 +1,8 @@
+# The computation image needs only these source files. Keep local runtimes,
+# browser assets, Git metadata, credentials, caches and logs out of its context.
+*
+!chemistry.py
+!deploy/
+!deploy/*.py
+!deploy/requirements.txt
+!deploy/Dockerfile

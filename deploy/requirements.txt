@@ -1,0 +1,4 @@
+rdkit==2025.9.6
+numpy==2.5.4
+pillow==13.0.0
+uvicorn==0.35.0
