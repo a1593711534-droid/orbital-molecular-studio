@@ -1,0 +1,19 @@
+.molecule-scene{position:relative;width:100%;height:100%;min-height:260px;overflow:hidden;background:radial-gradient(ellipse at 47% 41%,#ffffff 0%,#f3f6f9 57%,#eaf0f4 100%);isolation:isolate}
+.molecule-scene>canvas{position:absolute;inset:0;width:100%;height:100%;display:block;outline:none;touch-action:none}
+.molecule-scene>canvas:focus-visible{outline:2px solid #19a59e;outline-offset:-3px}
+.scene-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px;color:#46576b;pointer-events:none;font-size:16px;line-height:1.6;letter-spacing:.01em}
+.scene-empty strong{font-size:23px;font-weight:600;color:#263c52}.scene-empty-symbol{display:grid;place-items:center;width:70px;height:70px;border:1px solid #98aaba;border-radius:50%;font-size:32px;font-weight:400;color:#3e607a;margin-bottom:6px}
+.scene-error{position:absolute;inset:20px;display:grid;place-items:center;color:#8f2727;font-size:17px;line-height:1.6;font-weight:500;text-align:center;z-index:2;pointer-events:none}
+.scene-axis{position:absolute;left:16px;bottom:14px;pointer-events:none;display:flex;align-items:flex-end;gap:0}.scene-axis svg{font-family:Arial,sans-serif;font-size:13px;font-weight:700;overflow:visible}.scene-axis text{text-anchor:middle;paint-order:stroke;stroke:#fff;stroke-width:3px;stroke-linejoin:round}.scene-axis path{stroke-width:1.8}.scene-axis span{font:600 13px ui-monospace,monospace;letter-spacing:.08em;color:#405369;margin:0 0 6px 0}
+.scene-hover-hint{display:none;position:absolute;z-index:4;pointer-events:none;background:#173d34;color:#fff;border:1px solid #fff;border-radius:7px;padding:5px 10px;font-size:16px;font-weight:600;line-height:1.5;white-space:nowrap;box-shadow:0 3px 12px #15332a20}
+.electron-legend{position:absolute;right:12px;bottom:6px;max-width:calc(100% - 68px);display:flex;flex-wrap:wrap;justify-content:flex-end;gap:5px 13px;padding:7px 10px;border-radius:8px;background:#fffffff2;color:#355b50;font-size:var(--text-small,14px);line-height:1.55;pointer-events:none;border:1px solid #dae6e0}
+.electron-legend>span{display:flex;align-items:center;gap:5px;white-space:nowrap}
+.electron-dots{display:inline-block;width:18px;height:6px;background:radial-gradient(circle at 4px 3px,#168f89 0 3px,transparent 3.1px),radial-gradient(circle at 14px 3px,#168f89 0 3px,transparent 3.1px)}
+.pi-system-count{color:#644992;font-weight:600}
+.pi-system-count svg{width:28px;height:20px;overflow:visible}
+.pi-system-count path{stroke:#7a8c9f;fill:none;stroke-width:1}
+.pi-system-count ellipse{fill:#8f7ac2;fill-opacity:.35;stroke:#7454ab;stroke-width:.5}
+.pi-system-count ellipse:nth-of-type(n+4){fill:#6da8d9;stroke:#487d9d}
+.partial-bond-symbol{display:inline-block;width:24px;height:10px;border-top:2px solid #5e766c;border-bottom:2px dashed #5e766c}
+.electron-legend .orbital-caption{color:#52677b;font-size:var(--text-small,14px)}
+@media(max-width:560px){.electron-legend{right:4px;bottom:3px;gap:4px 9px;max-width:calc(100% - 48px);padding:5px 7px}.electron-legend .orbital-caption{white-space:normal}.pi-system-count svg{width:23px}}
