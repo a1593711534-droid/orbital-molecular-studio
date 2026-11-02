@@ -26,13 +26,15 @@
 
 ## iPad 與私人網頁版
 
-私人網頁入口：[ORBITAL 分子工作室](https://orbital-molecular-studio.a1593711534.chatgpt.site)。Sites 已發布；2026-11-01 已確認 Render 計算服務部署為 `live`，公開 `/healthz` 回傳 HTTP 200、版本 `1.2.0`。Sites 登入後的完整計算流程及真實 iPad 尚待驗證，詳見 `VALIDATION.md`。
+私人網頁入口：[ORBITAL 分子工作室](https://orbital-molecular-studio.a1593711534.chatgpt.site)。2026-11-02 已修正雲端轉接相容性問題，正式網頁已實測建立 CH₄、延伸為 C₂H₆、輸入並生成 CH₃NO₂，以及切換 Lewis 式。Render 計算服務版本為 `1.2.0`。真實 iPad 尚未實測，詳見 `VALIDATION.md`。
+
+2026-11-03 已確認免費主機啟動等待後能自動完成 CH₃NO₂ 還原。操作中若出現等待提示，保持頁面開啟即可；不用重複點擊。
 
 部署架構為：`iPad Safari → Sites 私人網頁 → 伺服器代理 → Render Python／RDKit`。完成部署後，使用交付的 Sites 網址並登入具存取權的 ChatGPT 帳號；家中 Windows 電腦不必保持開機。Render 的網址是計算 API，並非模型操作介面。部署與實機驗證狀態見 `VALIDATION.md`。
 
 原始碼保存在 [GitHub](https://github.com/a1593711534-droid/orbital-molecular-studio)；Render 連接 `main` 分支，使用 `deploy/Dockerfile` 建置，已設定 On Commit。這次透過連線工具上傳提交後未觀察到自動部署，因此已手動觸發並確認成功；後續更新仍應確認部署狀態。私人網頁由 Sites 另行部署。只更新 GitHub 不會自動發布新的 Sites 前端版本；前端與後端須各自完成對應發布流程。GitHub Pages 單獨無法執行此版的 Python／RDKit 計算。
 
-雲端版需要網路。Render 免費服務閒置後可能需要等待啟動，介面會保留原結構並提示等待或重試。新增原子、改鍵、最佳化及輸入預覽使用相同化學引擎；驗證密鑰僅保存在伺服器環境變數中，不由使用者填寫，也不放入瀏覽器程式。
+雲端版需要網路。Render 免費服務閒置後可能需要等待啟動，介面會保留原結構並提示等待或重試。已登入時通常不會再次出現登入畫面。新增原子、改鍵、最佳化及輸入預覽使用相同化學引擎；驗證密鑰僅保存在伺服器環境變數中，不由使用者填寫，也不放入瀏覽器程式。
 
 **專案自動儲存在目前裝置、目前瀏覽器的本機儲存空間，不是跨裝置雲端同步。** 私人網站登入不會自動把 Windows 暫存移至 iPad。要換裝置或長期保存，請匯出專案 JSON，再於另一台裝置匯入；清除瀏覽資料或使用無痕模式可能失去暫存。Windows 的 `127.0.0.1` 暫存與 Sites 網址的暫存也彼此獨立。
 

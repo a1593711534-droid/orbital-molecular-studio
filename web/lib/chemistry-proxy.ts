@@ -1,7 +1,71 @@
 import {getChatGPTUser} from '../app/chatgpt-auth';
 
 const MAX_BODY=2_000_000;
+const TOTAL_TIMEOUT_MS=125_000;
+const WARMUP_TIMEOUT_MS=75_000;
+const HEALTH_ATTEMPT_MS=15_000;
+const HEALTH_RETRY_MS=1_500;
+const COMPUTE_TIMEOUT_MS=50_000;
 function json(error:string,status:number){return Response.json({error},{status,headers:{'Cache-Control':'no-store'}});}
+function diagnostic(stage:'warmup'|'compute',reason:string,response?:Response){
+  const type=response?.headers.get('content-type')?.toLowerCase();
+  // Never log credentials, payloads, URLs, exception messages or raw headers.
+  console.warn('orbital-chemistry',JSON.stringify({stage,reason,status:response?.status,
+    contentType:!type?'missing':type.includes('application/json')?'json':type.includes('text/html')?'html':'other'}));
+}
+async function discard(response:Response){try{await response.body?.cancel();}catch{/* Already consumed or cancelled. */}}
+function delay(ms:number,signal:AbortSignal){
+  return new Promise<void>((resolve,reject)=>{
+    const abort=()=>{clearTimeout(timer);signal.removeEventListener('abort',abort);reject(new DOMException('Cancelled','AbortError'));};
+    const timer=setTimeout(()=>{signal.removeEventListener('abort',abort);resolve();},ms);
+    signal.addEventListener('abort',abort,{once:true});
+    if(signal.aborted)abort();
+  });
+}
+function boundedSignal(parent:AbortSignal,ms:number){
+  const controller=new AbortController();
+  const abort=()=>controller.abort();
+  parent.addEventListener('abort',abort,{once:true});
+  if(parent.aborted)abort();
+  const timer=setTimeout(abort,ms);
+  return {signal:controller.signal,cleanup:()=>{clearTimeout(timer);parent.removeEventListener('abort',abort);}};
+}
+type Readiness={ok:true;health:Record<string,unknown>}|{ok:false;response:Response};
+async function waitUntilReady(endpoint:URL,token:string,signal:AbortSignal):Promise<Readiness>{
+  const deadline=Date.now()+WARMUP_TIMEOUT_MS;
+  const healthURL=new URL('/api/health',endpoint.origin);
+  while(Date.now()<deadline){
+    if(signal.aborted)throw new DOMException('Cancelled','AbortError');
+    const attempt=boundedSignal(signal,Math.min(HEALTH_ATTEMPT_MS,deadline-Date.now()));
+    try{
+      // Waking a free instance is a read-only GET. A structural POST is never replayed.
+      const response=await fetch(healthURL,{headers:{Authorization:`Bearer ${token}`},signal:attempt.signal,redirect:'manual'});
+      if(response.status>=300&&response.status<400||response.status===401||response.status===403){
+        diagnostic('warmup','configuration',response);await discard(response);
+        return {ok:false,response:json('雲端服務連線設定需要更新。',503)};
+      }
+      if(response.status>=400&&response.status<500){
+        diagnostic('warmup','rejected',response);await discard(response);
+        return {ok:false,response:json(response.status===429?'計算服務忙碌中，請稍後再試。':'雲端服務連線設定需要更新。',response.status===429?429:503)};
+      }
+      if(response.status>=500||!response.headers.get('content-type')?.toLowerCase().includes('application/json')){
+        diagnostic('warmup','not-ready',response);await discard(response);
+      }else{
+        const health=await response.json() as Record<string,unknown>|null;
+        if(response.status===200&&health&&health.status==='ready'&&health.app==='orbital-chemistry')return {ok:true,health};
+        diagnostic('warmup','invalid-health',response);
+        return {ok:false,response:json('雲端服務連線設定需要更新。',503)};
+      }
+    }catch{
+      if(signal.aborted)throw new DOMException('Cancelled','AbortError');
+      diagnostic('warmup',attempt.signal.aborted?'attempt-timeout':'unavailable');
+    }finally{attempt.cleanup();}
+    const remaining=deadline-Date.now();
+    if(remaining>0)await delay(Math.min(HEALTH_RETRY_MS,remaining),signal);
+  }
+  diagnostic('warmup','deadline');
+  return {ok:false,response:json('雲端服務啟動較久，原結構已保留，請稍後再試。',503)};
+}
 
 export async function proxyChemistry(request:Request,path:'/api/molecule'|'/api/health') {
   if(!await getChatGPTUser())return json('請重新整理頁面並登入。',401);
@@ -25,14 +89,33 @@ export async function proxyChemistry(request:Request,path:'/api/molecule'|'/api/
     body=new TextDecoder().decode(bytes);
     try{const value=JSON.parse(body);if(!value||typeof value!=='object'||Array.isArray(value))throw new Error();}catch{return json('無法讀取結構資料。',400);}
   }
-  const controller=new AbortController();
-  const timer=setTimeout(()=>controller.abort(),125000);
-  const abort=()=>controller.abort();request.signal.addEventListener('abort',abort,{once:true});
+  const operation=boundedSignal(request.signal,TOTAL_TIMEOUT_MS);
+  let compute:ReturnType<typeof boundedSignal>|undefined;
   try {
-    const response=await fetch(endpoint,{method:path==='/api/molecule'?'POST':'GET',headers:{Authorization:`Bearer ${token}`,...(body?{'Content-Type':'application/json'}:{})},body,signal:controller.signal,redirect:'error'});
-    if(!response.headers.get('content-type')?.includes('application/json'))return json('雲端服務正在啟動或暫時無法回應，請稍後再試。',503);
-    if(response.status===401||response.status===403)return json('雲端服務連線設定需要更新。',503);
-    return new Response(response.body,{status:response.status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
-  } catch {return json(controller.signal.aborted?'雲端回應逾時，請稍後再試。':'雲端計算服務暫時無法連線，請稍後再試。',503);}
-  finally{clearTimeout(timer);request.signal.removeEventListener('abort',abort);}
+    const readiness=await waitUntilReady(endpoint,token,operation.signal);
+    if(!readiness.ok)return readiness.response;
+    if(path==='/api/health')return Response.json(readiness.health,{headers:{'Cache-Control':'no-store'}});
+    if(operation.signal.aborted)throw new DOMException('Cancelled','AbortError');
+    compute=boundedSignal(operation.signal,COMPUTE_TIMEOUT_MS);
+    // Workers supports manual/follow only. Reject redirects ourselves so the
+    // server credential and molecule body never travel to another destination.
+    const response=await fetch(endpoint,{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body,signal:compute.signal,redirect:'manual'});
+    if(response.status>=300&&response.status<400||response.status===401||response.status===403){
+      diagnostic('compute','configuration',response);await discard(response);
+      return json('雲端服務連線設定需要更新。',503);
+    }
+    if(!response.headers.get('content-type')?.toLowerCase().includes('application/json')){
+      diagnostic('compute','non-json',response);await discard(response);
+      return json('雲端服務暫時無法回應，原結構已保留，請稍後再試。',503);
+    }
+    if(response.status>=500)diagnostic('compute','upstream-error',response);
+    // Keep the deadline active through the body; receiving headers alone does
+    // not mean a calculation finished. Returning a stream would clear it early.
+    const result=await response.text();
+    return new Response(result,{status:response.status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
+  } catch {
+    const timedOut=operation.signal.aborted||compute?.signal.aborted;
+    diagnostic(compute?'compute':'warmup',timedOut?'cancelled-or-timeout':'unavailable');
+    return json(timedOut?'雲端回應逾時，原結構已保留，請稍後再試。':'雲端計算服務暫時無法連線，請稍後再試。',503);
+  } finally{compute?.cleanup();operation.cleanup();}
 }
