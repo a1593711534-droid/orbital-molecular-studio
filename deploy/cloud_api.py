@@ -11,11 +11,12 @@ import json
 import os
 from pathlib import Path
 import sys
+from deploy.worker_pool import WorkerPool
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_BODY = 2 * 1024 * 1024
 MAX_RESPONSE = 16 * 1024 * 1024
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 
 async def compute(payload: dict, timeout: float):
@@ -45,13 +46,15 @@ async def compute(payload: dict, timeout: float):
 
 
 class OrbitalAPI:
-    def __init__(self, token=None, *, concurrency=1, timeout=45.0, executor=compute):
+    def __init__(self, token=None, *, concurrency=1, timeout=45.0, executor=None):
         self.token = token if token is not None else os.environ.get("ORBITAL_API_TOKEN", "")
         self.configured = (isinstance(self.token, str) and len(self.token) >= 32
                            and self.token.isascii() and not any(c.isspace() or ord(c) < 33 or ord(c) > 126 for c in self.token))
-        self.slots = asyncio.BoundedSemaphore(max(1, min(int(concurrency), 4)))
+        capacity = max(1, min(int(concurrency), 4))
+        self.slots = asyncio.BoundedSemaphore(capacity)
         self.timeout = max(1.0, min(float(timeout), 120.0))
-        self.executor = executor
+        self.pool = WorkerPool(capacity) if executor is None else None
+        self.executor = executor if executor is not None else self.pool.compute
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "lifespan":
@@ -61,8 +64,16 @@ class OrbitalAPI:
                     if not self.configured:
                         await send({"type": "lifespan.startup.failed", "message": "Set ORBITAL_API_TOKEN to a random secret of at least 32 bytes."})
                         return
+                    if self.pool is not None:
+                        try:
+                            await self.pool.start(self.timeout)
+                        except Exception:
+                            await send({"type": "lifespan.startup.failed", "message": "Chemistry engine could not start."})
+                            return
                     await send({"type": "lifespan.startup.complete"})
                 elif event["type"] == "lifespan.shutdown":
+                    if self.pool is not None:
+                        await self.pool.close()
                     await send({"type": "lifespan.shutdown.complete"})
                     return
         if scope["type"] != "http":
@@ -158,14 +169,28 @@ class OrbitalAPI:
             await reply(429, {"error": "計算引擎忙碌中，請稍後再試。"}, [(b"retry-after", b"2")])
             return
         await self.slots.acquire()
+        job = disconnect = None
         try:
-            status, result = await self.executor(payload, self.timeout)
+            async def wait_disconnect():
+                while True:
+                    if (await receive())["type"] == "http.disconnect":
+                        return
+            job = asyncio.create_task(self.executor(payload, self.timeout))
+            disconnect = asyncio.create_task(wait_disconnect())
+            done, _ = await asyncio.wait((job, disconnect), return_when=asyncio.FIRST_COMPLETED)
+            if job not in done:
+                return
+            status, result = await job
             await reply(status, result)
         except asyncio.TimeoutError:
             await reply(504, {"error": "計算逾時，請減少候選構象數或縮小分子後重試。"})
         except Exception:
             await reply(500, {"error": "計算服務暫時無法完成，請稍後重試。"})
         finally:
+            for task in (job, disconnect):
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(*(task for task in (job, disconnect) if task is not None), return_exceptions=True)
             self.slots.release()
 
 

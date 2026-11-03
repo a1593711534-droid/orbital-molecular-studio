@@ -21,7 +21,7 @@ import rdkit
 import chemistry
 
 APP = "orbital-molecular-studio"
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 INSTANCE = hashlib.sha256(ROOT.as_posix().casefold().encode("utf-8")).hexdigest()[:20]
 DIST = ROOT / "dist"
 MAX_BODY = 2 * 1024 * 1024

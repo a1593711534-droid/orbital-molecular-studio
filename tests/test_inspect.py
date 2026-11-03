@@ -1,9 +1,10 @@
 """Incremental input feedback must be cheap, clear and safe to embed."""
 import unittest
+import re
 from unittest.mock import patch
 from xml.etree import ElementTree
 
-from chemistry import process
+from chemistry import process, Chem, rdMolDraw2D
 
 
 def inspect(smiles):
@@ -15,12 +16,71 @@ class InspectTests(unittest.TestCase):
         result = inspect("CCO")
         self.assertTrue(result["valid"])
         self.assertEqual(result["formula"], "C2H6O")
-        self.assertEqual((result["atomCount"], result["bondCount"]), (3, 2))
+        self.assertEqual((result["atomCount"], result["bondCount"]), (9, 8))
+        self.assertTrue(result["atomCountIncludesHydrogen"])
+        self.assertEqual((result["heavyAtomCount"], result["inputAtomCount"]), (3, 3))
         self.assertEqual(result["canonicalSmiles"], "CCO")
         root = ElementTree.fromstring(result["svg"])
         self.assertEqual(root.tag, "{http://www.w3.org/2000/svg}svg")
         self.assertIn("class='note'", result["svg"])
         self.assertTrue(any("二維" in warning for warning in result["warnings"]))
+
+    def test_single_heavy_atom_hydrides_show_every_hydrogen_bond(self):
+        for smiles, atoms, bonds in [("[NH4+]", 5, 4), ("N", 4, 3), ("O", 3, 2), ("C", 5, 4)]:
+            with self.subTest(smiles=smiles):
+                result = inspect(smiles)
+                self.assertTrue(result["valid"])
+                self.assertEqual((result["atomCount"], result["bondCount"]), (atoms, bonds))
+                self.assertEqual(result["heavyAtomCount"], 1)
+                visible_bonds = set(re.findall(r"\bbond-(\d+)\b", result["svg"]))
+                self.assertEqual(len(visible_bonds), bonds)
+                model = process({"action": "generate", "smiles": smiles, "samples": 1})
+                self.assertEqual((len(model["atoms"]), len(model["bonds"])), (atoms, bonds))
+
+    def test_expanded_hydrogens_have_no_input_index_and_original_atoms_keep_theirs(self):
+        draw = rdMolDraw2D.PrepareAndDrawMolecule
+        depictions = []
+
+        def capture(drawer, molecule, *args, **kwargs):
+            depictions.append(Chem.Mol(molecule))
+            return draw(drawer, molecule, *args, **kwargs)
+
+        with patch("chemistry.rdMolDraw2D.PrepareAndDrawMolecule", side_effect=capture):
+            previews = []
+            for smiles in ["[NH4+]", "[2H][NH3+]", "CCO"]:
+                previews.append(inspect(smiles))
+                self.assertTrue(previews[-1]["valid"])
+        ammonium, isotope, ethanol = depictions
+        self.assertEqual(ammonium.GetNumAtoms(), 5)
+        self.assertEqual(isotope.GetAtomWithIdx(0).GetIsotope(), 2)
+        self.assertEqual(isotope.GetAtomWithIdx(1).GetSymbol(), "N")
+        for preview, expected in zip(previews, [[("0", "1")], [("0", "1"), ("1", "2")]]):
+            root = ElementTree.fromstring(preview["svg"])
+            notes = [(node.get("data-input-atom"), node.text) for node in root if node.get("data-input-atom") is not None]
+            self.assertEqual(notes, expected)
+        self.assertEqual(ethanol.GetNumAtoms(), 3)
+        self.assertEqual([a.GetProp("atomNote") for a in ethanol.GetAtoms()], ["1", "2", "3"])
+
+    def test_isotope_hydrogens_are_not_doubled_or_lost(self):
+        for smiles, atoms, bonds in [("[2H]O[2H]", 3, 2), ("[2H][NH3+]", 5, 4), ("[13CH4]", 5, 4)]:
+            with self.subTest(smiles=smiles):
+                result = inspect(smiles)
+                self.assertTrue(result["valid"])
+                self.assertEqual((result["atomCount"], result["bondCount"]), (atoms, bonds))
+                self.assertEqual(result["canonicalSmiles"], Chem.MolToSmiles(Chem.MolFromSmiles(smiles, sanitize=False)))
+
+    def test_lone_atom_index_is_anchored_and_unsupported_atoms_remain_rejected(self):
+        result = inspect("[Cl-]")
+        self.assertTrue(result["valid"])
+        self.assertEqual((result["atomCount"], result["bondCount"]), (1, 0))
+        root = ElementTree.fromstring(result["svg"])
+        notes = [node for node in root if "note" in node.get("class", "").split()]
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0].text, "1")
+        self.assertEqual(notes[0].get("text-anchor"), "middle")
+        self.assertIn("atom-0", notes[0].get("class"))
+        self.assertFalse(inspect("[Ne]")["valid"])
+        self.assertFalse(inspect("[NH4+].[Cl-]")["valid"])
 
     def test_inspect_never_embeds_or_minimizes(self):
         with patch("chemistry.AllChem.EmbedMultipleConfs", side_effect=AssertionError("3D called")), \

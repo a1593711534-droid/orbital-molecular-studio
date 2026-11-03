@@ -169,9 +169,15 @@ def _inspect(payload):
                 return {**empty, "message": "這個結構缺少本機力場參數，暫時不能建立三維模型。"}
         except ChemistryError as exc:
             return {**empty, "message": str(exc)}
-        display = Chem.Mol(molecule)
+        # A lone heavy-atom label such as NH4+ hides every bond. Expand the
+        # hydrogens in this depiction only; original atoms keep their indices,
+        # added H atoms have no input-token number, and the input stays intact.
+        compact_notes = molecule.GetNumHeavyAtoms() == 1 or molecule.GetNumAtoms() == 1
+        display = (Chem.AddHs(molecule) if molecule.GetNumHeavyAtoms() == 1
+                   else Chem.Mol(molecule))
         for atom in display.GetAtoms():
-            atom.SetProp("atomNote", str(atom.GetIdx()+1))
+            if atom.GetIdx() < molecule.GetNumAtoms() and not compact_notes:
+                atom.SetProp("atomNote", str(atom.GetIdx()+1))
         rdDepictor.Compute2DCoords(display)
         drawer = rdMolDraw2D.MolDraw2DSVG(520, 300)
         options = drawer.drawOptions()
@@ -185,10 +191,34 @@ def _inspect(payload):
         drawer.FinishDrawing()
         svg = drawer.GetDrawingText()
         svg = svg[svg.index("<svg"):]
+        if compact_notes:
+            # RDKit can place notes far from a lone atom or small hydride.
+            # Keep input indices beside their atoms, in the largest bond-free
+            # angular gap. Added H atoms never acquire an input-token index.
+            notes = []
+            for atom in molecule.GetAtoms():
+                index = atom.GetIdx()
+                point = drawer.GetDrawCoords(index)
+                angles = sorted(math.atan2(drawer.GetDrawCoords(n.GetIdx()).y-point.y,
+                                          drawer.GetDrawCoords(n.GetIdx()).x-point.x)
+                                for n in display.GetAtomWithIdx(index).GetNeighbors())
+                angle = math.pi / 2
+                if angles:
+                    ends = angles[1:] + [angles[0] + 2*math.pi]
+                    start, end = max(zip(angles, ends), key=lambda pair: pair[1]-pair[0])
+                    angle = (start+end)/2
+                x, y = point.x + 32*math.cos(angle), point.y + 32*math.sin(angle)
+                notes.append(f'<text class="note atom-{index}" data-input-atom="{index}" '
+                             f'x="{x:.2f}" y="{y+4:.2f}" text-anchor="middle" '
+                             'font-family="sans-serif" font-size="12" fill="#627867">'
+                             f'{index+1}</text>')
+            svg = svg.replace("</svg>", "".join(notes) + "</svg>")
         return {"valid": True, "svg": svg,
                 "formula": rdMolDescriptors.CalcMolFormula(molecule),
                 **_formula_metadata(molecule), "charge": Chem.GetFormalCharge(molecule),
-                "atomCount": molecule.GetNumAtoms(), "bondCount": molecule.GetNumBonds(),
+                "atomCount": checked.GetNumAtoms(), "bondCount": checked.GetNumBonds(),
+                "atomCountIncludesHydrogen": True, "heavyAtomCount": checked.GetNumHeavyAtoms(),
+                "inputAtomCount": molecule.GetNumAtoms(),
                 "canonicalSmiles": Chem.MolToSmiles(molecule, isomericSmiles=True),
                 "message": "連接結構有效",
                 "warnings": ["此為二維連接圖；三維幾何需生成後確認。"]}

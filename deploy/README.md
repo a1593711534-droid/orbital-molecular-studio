@@ -34,7 +34,7 @@ Sites 的環境變數建議為 `CHEMISTRY_API_URL`（完整 HTTPS origin）及 `
 
 ## 執行限制
 
-預設同時最多 1 個計算，忙碌時回傳 429；每個計算在獨立子程序執行，超過 45 秒會終止程序並回傳 504。可用 `ORBITAL_CONCURRENCY`（1–4）與 `ORBITAL_TIMEOUT_SECONDS`（1–120）調整。單次輸入上限 2 MB，傳送逾時 10 秒；不記錄輸入結構、回傳結構或驗證密鑰。
+預設同時最多 1 個計算，忙碌時回傳 429。v1.2.1 使用可重複利用的隔離子程序，啟動時先載入 RDKit；超過 45 秒仍會終止該程序並回傳 504，後續工作使用新程序，不自動重送原請求。關閉服務時清理工作程序。可用 `ORBITAL_CONCURRENCY`（1–4）與 `ORBITAL_TIMEOUT_SECONDS`（1–120）調整。單次輸入上限 2 MB，傳送逾時 10 秒；不記錄輸入結構、回傳結構或驗證密鑰。
 
 此服務不包含資料庫，使用者模型仍由前端專案存檔保存。部署後仍須實測 iPad Safari 的觸控、檔案匯入／匯出與 3D 顯示，不能用桌面視窗尺寸測試代替實機驗證。
 
@@ -49,7 +49,7 @@ Sites 的環境變數建議為 `CHEMISTRY_API_URL`（完整 HTTPS origin）及 `
 容器需在有 Docker 的環境另行建置驗證：
 
 ```text
-docker build -f deploy/Dockerfile -t orbital-chemistry:1.2.0 .
+docker build -f deploy/Dockerfile -t orbital-chemistry:1.2.1 .
 ```
 
 2026-10-29 已通過 25 項 API 與實際 RDKit 子程序測試，涵蓋驗證、輸入限制、忙碌處理、錯誤隱藏、程序逾時終止及硝基甲烷生成。已確認固定版本在 PyPI 提供 Python 3.12／Linux x86_64 相容 wheel。本機未安裝 Docker；Linux 容器建置與平台連線仍以 Render 部署結果為準。

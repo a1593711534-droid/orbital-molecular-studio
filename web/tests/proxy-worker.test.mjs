@@ -13,7 +13,7 @@ proxy=stripTypeScriptTypes(proxy);
 const upstreamReplies=[];
 const upstreamCalls=[];
 let unexpectedRedirects=0;
-const mf=new Miniflare({
+function createWorker(){return new Miniflare({
   modules:true, compatibilityDate:'2026-05-15',
   // Intercept every outbound service call, without a second Node fetch layer
   // that could follow redirects independently of the tested Workers fetch.
@@ -37,12 +37,13 @@ const mf=new Miniflare({
     }
     return proxyChemistry(request,new URL(request.url).pathname==='/api/health'?'/api/health':'/api/molecule');
   }};`,
-});
-test.after(async()=>{await mf.dispose();});
+});}
+let mf;
+test.afterEach(async()=>{await mf.dispose();});
 const requestOptions=body=>({method:'POST',headers:{Origin:'https://studio.example','Content-Type':'application/json'},body:JSON.stringify(body)});
 const jsonHeaders={'Content-Type':'application/json'};
 const ready={status:200,body:{status:'ready',app:'orbital-chemistry',version:'1.2.0'},headers:jsonHeaders};
-test.beforeEach(()=>{upstreamReplies.length=0;upstreamCalls.length=0;unexpectedRedirects=0;});
+test.beforeEach(()=>{upstreamReplies.length=0;upstreamCalls.length=0;unexpectedRedirects=0;mf=createWorker();});
 
 test('workerd reproduces the original unsupported redirect:error before contacting the upstream',async()=>{
   const response=await mf.dispatchFetch('https://studio.example/legacy-redirect');
@@ -104,4 +105,14 @@ test('real workerd waits through an HTML cold start then sends exactly one molec
   assert.equal(response.status,200);assert.deepEqual(await response.json(),{displayFormula:'CH4'});
   assert.deepEqual(upstreamCalls.map(call=>call.method),['GET','GET','POST']);
   assert.deepEqual(upstreamReplies,[]);
+});
+
+test('real workerd warm edits skip redundant health requests but never cache molecular results',async()=>{
+  upstreamReplies.push(ready,{status:200,body:{displayFormula:'CH4'}},{status:200,body:{displayFormula:'C2H6'}});
+  const first=await mf.dispatchFetch('https://studio.example/api/molecule',requestOptions({action:'generate',smiles:'C'}));
+  const second=await mf.dispatchFetch('https://studio.example/api/molecule',requestOptions({action:'generate',smiles:'CC'}));
+  assert.equal(first.status,200);assert.equal(second.status,200);
+  assert.equal((await first.json()).displayFormula,'CH4');assert.equal((await second.json()).displayFormula,'C2H6');
+  assert.deepEqual(upstreamCalls.map(call=>call.method),['GET','POST','POST']);
+  assert.deepEqual(upstreamCalls.filter(call=>call.method==='POST').map(call=>JSON.parse(call.body).smiles),['C','CC']);
 });

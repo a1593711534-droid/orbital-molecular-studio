@@ -24,7 +24,7 @@ async def request(app, *, path="/api/molecule", method="POST", body=b'{"smiles":
     async def receive():
         if queue:
             return queue.pop(0)
-        return {"type": "http.disconnect"}
+        await asyncio.Event().wait()
 
     async def send(event):
         sent.append(event)

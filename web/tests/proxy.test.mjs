@@ -6,7 +6,8 @@ import {setImmediate} from 'node:timers/promises';
 
 let source=await readFile(new URL('../lib/chemistry-proxy.ts',import.meta.url),'utf8');
 source=source.replace("import {getChatGPTUser} from '../app/chatgpt-auth';",'const getChatGPTUser=async()=>globalThis.__testUser;');
-const {proxyChemistry}=await import('data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(source)).toString('base64'));
+const moduleURL='data:text/javascript;base64,'+Buffer.from(stripTypeScriptTypes(source)).toString('base64');
+let proxyChemistry,moduleId=0;
 const oldFetch=globalThis.fetch;
 const base='https://studio.example';
 const health={status:'ready',app:'orbital-chemistry',version:'1.2.0'};
@@ -15,7 +16,7 @@ function isHealth(url){return new URL(url).pathname==='/api/health';}
 function fakeTime(t){t.mock.timers.enable({apis:['setTimeout','Date']});}
 async function advance(t,ms){t.mock.timers.tick(ms);await setImmediate();}
 
-test.beforeEach(()=>{globalThis.__testUser={userId:'owner'};process.env.CHEMISTRY_API_URL='https://chemistry.example';process.env.CHEMISTRY_API_TOKEN='test-only-secret';globalThis.fetch=async()=>{throw new Error('Unexpected request');};});
+test.beforeEach(async()=>{({proxyChemistry}=await import(moduleURL+'#'+(++moduleId)));globalThis.__testUser={userId:'owner'};process.env.CHEMISTRY_API_URL='https://chemistry.example';process.env.CHEMISTRY_API_TOKEN='test-only-secret';globalThis.fetch=async()=>{throw new Error('Unexpected request');};});
 test.after(()=>{globalThis.fetch=oldFetch;delete globalThis.__testUser;delete process.env.CHEMISTRY_API_URL;delete process.env.CHEMISTRY_API_TOKEN;});
 
 test('anonymous computation is rejected before contacting backend',async()=>{globalThis.__testUser=null;assert.equal((await proxyChemistry(request(),'/api/molecule')).status,401);});
@@ -71,4 +72,53 @@ test('the 50 second calculation deadline covers a stalled response body',async t
   fakeTime(t);let posts=0;
   globalThis.fetch=async(url,options)=>{if(isHealth(url))return Response.json(health);posts++;return new Response(new ReadableStream({start(controller){options.signal.addEventListener('abort',()=>controller.error(new DOMException('timeout','AbortError')),{once:true});}}),{headers:{'Content-Type':'application/json'}});};
   const pending=proxyChemistry(request(),'/api/molecule');await setImmediate();assert.equal(posts,1);await advance(t,50000);const result=await pending;assert.equal(result.status,503);assert.match(await result.text(),/逾時/);assert.equal(posts,1);
+});
+
+test('sequential warm calculations reuse only readiness and still check identity and origin',async()=>{
+  const calls=[];let posts=0;
+  globalThis.fetch=async(url,options)=>{calls.push(isHealth(url)?'GET':'POST');return Response.json(isHealth(url)?health:{sequence:++posts,smiles:JSON.parse(options.body).smiles});};
+  assert.deepEqual(await (await proxyChemistry(request({action:'generate',smiles:'C'}),'/api/molecule')).json(),{sequence:1,smiles:'C'});
+  assert.deepEqual(await (await proxyChemistry(request({action:'generate',smiles:'CC'}),'/api/molecule')).json(),{sequence:2,smiles:'CC'});
+  globalThis.__testUser=null;
+  assert.equal((await proxyChemistry(request(),'/api/molecule')).status,401);
+  globalThis.__testUser={userId:'owner'};
+  assert.equal((await proxyChemistry(request({}, {Origin:'https://other.example'}),'/api/molecule')).status,403);
+  assert.deepEqual(calls,['GET','POST','POST']);
+});
+
+test('readiness expires after 60 seconds and explicit health always checks upstream',async t=>{
+  fakeTime(t);const calls=[];
+  globalThis.fetch=async url=>{calls.push(isHealth(url)?'GET':'POST');return Response.json(isHealth(url)?health:{ok:true});};
+  await proxyChemistry(request(),'/api/molecule');
+  await advance(t,59000);await proxyChemistry(request(),'/api/molecule');
+  await advance(t,1000);await proxyChemistry(request(),'/api/molecule');
+  await proxyChemistry(new Request(base+'/api/health'),'/api/health');
+  assert.deepEqual(calls,['GET','POST','POST','GET','POST','GET']);
+});
+
+test('changing service origin or credential cannot reuse old readiness',async()=>{
+  let healthChecks=0;
+  globalThis.fetch=async url=>{if(isHealth(url))healthChecks++;return Response.json(isHealth(url)?health:{ok:true});};
+  await proxyChemistry(request(),'/api/molecule');
+  process.env.CHEMISTRY_API_TOKEN='a-different-test-token';await proxyChemistry(request(),'/api/molecule');
+  process.env.CHEMISTRY_API_URL='https://new-chemistry.example';await proxyChemistry(request(),'/api/molecule');
+  assert.equal(healthChecks,3);
+});
+
+test('upstream failures invalidate readiness without replaying a calculation',async()=>{
+  for(const failure of ['html','network',500,401,403,302]){
+    let gets=0,posts=0,failNext=false;
+    process.env.CHEMISTRY_API_TOKEN='test-for-'+failure;
+    globalThis.fetch=async url=>{
+      if(isHealth(url)){gets++;return Response.json(health);}
+      posts++;
+      if(failNext){failNext=false;if(failure==='network')throw new Error('unavailable');if(failure==='html')return new Response('<html>boot</html>',{headers:{'content-type':'text/html'}});return Response.json({error:'failed'},{status:failure});}
+      return Response.json({ok:true});
+    };
+    await proxyChemistry(request(),'/api/molecule');failNext=true;
+    assert.equal((await proxyChemistry(request(),'/api/molecule')).status, failure===500?500:503);
+    assert.equal(posts,2);assert.equal(gets,1);
+    assert.equal((await proxyChemistry(request(),'/api/molecule')).status,200);
+    assert.equal(posts,3);assert.equal(gets,2);
+  }
 });

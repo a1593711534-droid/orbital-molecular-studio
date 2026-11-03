@@ -6,6 +6,13 @@ const WARMUP_TIMEOUT_MS=75_000;
 const HEALTH_ATTEMPT_MS=15_000;
 const HEALTH_RETRY_MS=1_500;
 const COMPUTE_TIMEOUT_MS=50_000;
+const READY_TTL_MS=60_000;
+// One service readiness hint per isolate, never molecule data or user identity.
+// Authentication and origin checks still run for every incoming request.
+let readyService:{origin:string;token:string;expires:number;health:Record<string,unknown>}|undefined;
+function forgetReadiness(endpoint:URL,token:string){
+  if(readyService?.origin===endpoint.origin&&readyService.token===token)readyService=undefined;
+}
 function json(error:string,status:number){return Response.json({error},{status,headers:{'Cache-Control':'no-store'}});}
 function diagnostic(stage:'warmup'|'compute',reason:string,response?:Response){
   const type=response?.headers.get('content-type')?.toLowerCase();
@@ -31,7 +38,13 @@ function boundedSignal(parent:AbortSignal,ms:number){
   return {signal:controller.signal,cleanup:()=>{clearTimeout(timer);parent.removeEventListener('abort',abort);}};
 }
 type Readiness={ok:true;health:Record<string,unknown>}|{ok:false;response:Response};
-async function waitUntilReady(endpoint:URL,token:string,signal:AbortSignal):Promise<Readiness>{
+async function waitUntilReady(endpoint:URL,token:string,signal:AbortSignal,fresh=false):Promise<Readiness>{
+  if(signal.aborted)throw new DOMException('Cancelled','AbortError');
+  if(!fresh&&readyService?.origin===endpoint.origin&&readyService.token===token&&Date.now()<readyService.expires){
+    return {ok:true,health:readyService.health};
+  }
+  // Explicit health checks are fresh; expired or changed configuration is never reused.
+  readyService=undefined;
   const deadline=Date.now()+WARMUP_TIMEOUT_MS;
   const healthURL=new URL('/api/health',endpoint.origin);
   while(Date.now()<deadline){
@@ -52,7 +65,10 @@ async function waitUntilReady(endpoint:URL,token:string,signal:AbortSignal):Prom
         diagnostic('warmup','not-ready',response);await discard(response);
       }else{
         const health=await response.json() as Record<string,unknown>|null;
-        if(response.status===200&&health&&health.status==='ready'&&health.app==='orbital-chemistry')return {ok:true,health};
+        if(response.status===200&&health&&health.status==='ready'&&health.app==='orbital-chemistry'){
+          readyService={origin:endpoint.origin,token,expires:Date.now()+READY_TTL_MS,health};
+          return {ok:true,health};
+        }
         diagnostic('warmup','invalid-health',response);
         return {ok:false,response:json('雲端服務連線設定需要更新。',503)};
       }
@@ -92,7 +108,7 @@ export async function proxyChemistry(request:Request,path:'/api/molecule'|'/api/
   const operation=boundedSignal(request.signal,TOTAL_TIMEOUT_MS);
   let compute:ReturnType<typeof boundedSignal>|undefined;
   try {
-    const readiness=await waitUntilReady(endpoint,token,operation.signal);
+    const readiness=await waitUntilReady(endpoint,token,operation.signal,path==='/api/health');
     if(!readiness.ok)return readiness.response;
     if(path==='/api/health')return Response.json(readiness.health,{headers:{'Cache-Control':'no-store'}});
     if(operation.signal.aborted)throw new DOMException('Cancelled','AbortError');
@@ -101,19 +117,22 @@ export async function proxyChemistry(request:Request,path:'/api/molecule'|'/api/
     // server credential and molecule body never travel to another destination.
     const response=await fetch(endpoint,{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body,signal:compute.signal,redirect:'manual'});
     if(response.status>=300&&response.status<400||response.status===401||response.status===403){
+      forgetReadiness(endpoint,token);
       diagnostic('compute','configuration',response);await discard(response);
       return json('雲端服務連線設定需要更新。',503);
     }
     if(!response.headers.get('content-type')?.toLowerCase().includes('application/json')){
+      forgetReadiness(endpoint,token);
       diagnostic('compute','non-json',response);await discard(response);
       return json('雲端服務暫時無法回應，原結構已保留，請稍後再試。',503);
     }
-    if(response.status>=500)diagnostic('compute','upstream-error',response);
+    if(response.status>=500){forgetReadiness(endpoint,token);diagnostic('compute','upstream-error',response);}
     // Keep the deadline active through the body; receiving headers alone does
     // not mean a calculation finished. Returning a stream would clear it early.
     const result=await response.text();
     return new Response(result,{status:response.status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
   } catch {
+    forgetReadiness(endpoint,token);
     const timedOut=operation.signal.aborted||compute?.signal.aborted;
     diagnostic(compute?'compute':'warmup',timedOut?'cancelled-or-timeout':'unavailable');
     return json(timedOut?'雲端回應逾時，原結構已保留，請稍後再試。':'雲端計算服務暫時無法連線，請稍後再試。',503);
