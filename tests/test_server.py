@@ -77,7 +77,8 @@ class LocalServerTests(unittest.TestCase):
 
     def test_invalid_payloads(self):
         headers = {"Content-Type": "application/json"}
-        for data in ("[1,2]", "{broken", '{"x":NaN}', '{"x":Infinity}'):
+        for data in ("[1,2]", "{broken", '{"x":NaN}', '{"x":Infinity}', '{"x":1e309}',
+                     '{"name":"\\ud800"}', '{"x":' + '[' * 2000 + '0' + ']' * 2000 + '}'):
             self.assertEqual(self.request("POST", "/api/molecule", data, headers)[0], 400)
         self.assertEqual(self.request("POST", "/api/molecule", "{}", {"Content-Type": "text/plain"})[0], 415)
 

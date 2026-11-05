@@ -33,9 +33,17 @@ export async function chemistryRequest(payload, {signal, hosted=false}={}) {
   const timer=setTimeout(abort,hosted?135000:65000);
   try {
     const response=await fetch('/api/molecule',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:controller.signal});
+    const statusMessage=response.status===401?'登入已逾時，請重新整理並登入。':response.status===429?'計算服務忙碌中，請稍後再試。':null;
+    const unreadable=()=>new Error(statusMessage||(hosted?'雲端服務正在啟動或暫時無法回應，請稍後再試。':'計算服務回應無法讀取，請重新啟動 App。'));
     let data;
-    try {data=await response.json();} catch {throw new Error(hosted?'雲端服務正在啟動或暫時無法回應，請稍後再試。':'計算服務回應無法讀取，請重新啟動 App。');}
-    if(!response.ok||data.error)throw new Error(data.error||(response.status===401?'登入已逾時，請重新整理並登入。':response.status===429?'計算服務忙碌中，請稍後再試。':'計算未完成'));
+    try {data=await response.json();} catch(error) {
+      // Aborting after response headers also aborts body decoding. Preserve the
+      // cancellation so stale previews and genuine timeouts are handled alike.
+      if(controller.signal.aborted)throw new DOMException('Cancelled','AbortError');
+      throw unreadable();
+    }
+    if(!data||typeof data!=='object'||Array.isArray(data))throw unreadable();
+    if(!response.ok||data.error)throw new Error(typeof data.error==='string'?data.error:statusMessage||'計算未完成');
     if(controller.signal.aborted)throw new DOMException('Cancelled','AbortError');
     rememberPreview(key,data);
     return data;

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import {alignedPiOrbitals} from '../src/electronGeometry.js';
+import {alignedPiOrbitals, displayedLonePairs} from '../src/electronGeometry.js';
 
 function fixture(points,bonds,atoms=[]) {
   const positions=new Map(points.map((p,id)=>[id,new THREE.Vector3(...p)]));
@@ -69,6 +69,61 @@ test('a triple bond retains two perpendicular p components at each endpoint',()=
     assert(Math.abs(pair[0].direction.dot(pair[1].direction))<1e-8);
     for(const r of pair)assert(Math.abs(r.direction.x)<1e-8);
   }
+});
+
+test('linear CO2 retains two orthogonal central p axes and a matching axis for each oxygen',()=>{
+  const f=fixture([[-1.1621,0,0],[0,0,0],[1.1621,0,0]],[{a:0,b:1,order:2},{a:1,b:2,order:2}]);
+  for (const bonds of [f.bonds,[...f.bonds].reverse(),f.bonds.map(b=>({...b,a:b.b,b:b.a}))]) {
+    const result=alignedPiOrbitals(bonds,f.positions,f.neighbors);
+    assert.equal(result.length,4);
+    const center=result.filter(r=>r.atomId===1);
+    assert.equal(center.length,2);
+    assert(Math.abs(center[0].direction.dot(center[1].direction))<1e-8);
+    const left=result.find(r=>r.atomId===0),right=result.find(r=>r.atomId===2);
+    assert(Math.abs(left.direction.dot(right.direction))<1e-8);
+    assert(center.some(c=>parallel(c.direction,left.direction)));
+    assert(center.some(c=>parallel(c.direction,right.direction)));
+    for (const r of result) assert(Math.abs(r.direction.x)<1e-8);
+  }
+});
+
+test('allene respects the perpendicular terminal sigma planes',()=>{
+  const f=fixture([[-1.3,0,0],[0,0,0],[1.3,0,0],[-1.8,1,0],[-1.8,-1,0],[1.8,0,1],[1.8,0,-1]],
+    [{a:0,b:1,order:2},{a:1,b:2,order:2},{a:0,b:3,order:1},{a:0,b:4,order:1},{a:2,b:5,order:1},{a:2,b:6,order:1}]);
+  const result=orbitals(f),center=result.filter(r=>r.atomId===1);
+  assert.equal(result.length,4);assert.equal(center.length,2);
+  assert(Math.abs(center[0].direction.dot(center[1].direction))<1e-8);
+  assert(parallel(result.find(r=>r.atomId===0).direction,new THREE.Vector3(0,0,1)));
+  assert(parallel(result.find(r=>r.atomId===2).direction,new THREE.Vector3(0,1,0)));
+});
+
+test('CO2 lone-pair glyphs stay in the sigma plane of each selected p axis',()=>{
+  const f=fixture([[-1.1621,0,0],[0,0,0],[1.1621,0,0]],[{a:0,b:1,order:2},{a:1,b:2,order:2}],
+    [0,2].map(id=>({id,hybridization:'SP2',lonePairs:[{kind:'localized',direction:[id===0?-.5:.5,Math.sqrt(.75),0]},{kind:'localized',direction:[id===0?-.5:.5,-Math.sqrt(.75),0]}]})));
+  const before=JSON.stringify(f.atoms), axes=orbitals(f);
+  for(const atom of f.atoms) for(const view of ['hybrid','lewis']) {
+    const pairs=displayedLonePairs(atom,2,view,f.positions,f.neighbors,axes);
+    assert.equal(pairs.length,2);
+    for(const pair of pairs) {
+      const direction=new THREE.Vector3(...pair.direction);
+      assert(Math.abs(direction.dot(axes.find(r=>r.atomId===atom.id).direction))<1e-8);
+      assert(Math.abs(direction.length()-1)<1e-8);
+      assert(Math.abs(Math.abs(direction.x)-.5)<1e-8);
+    }
+  }
+  assert.equal(JSON.stringify(f.atoms),before);
+});
+
+test('a longer cumulene propagates terminal geometry through internal linear bonds',()=>{
+  const f=fixture([[0,0,0],[1.3,0,0],[2.6,0,0],[3.9,0,0],[-.5,1,0],[4.4,1,0]],
+    [{a:1,b:2,order:2},{a:0,b:1,order:2},{a:2,b:3,order:2},{a:0,b:4,order:1},{a:3,b:5,order:1}]);
+  const result=orbitals(f);
+  assert.equal(result.length,6);
+  for(const id of [1,2]) {
+    const pair=result.filter(r=>r.atomId===id);assert.equal(pair.length,2);
+    assert(Math.abs(pair[0].direction.dot(pair[1].direction))<1e-8);
+  }
+  assert(parallel(result.find(r=>r.atomId===0).direction,result.find(r=>r.atomId===3).direction));
 });
 
 test('an aromatic donor does not receive duplicate overlapping p orbitals',()=>{

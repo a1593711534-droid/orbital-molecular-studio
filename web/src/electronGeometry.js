@@ -5,7 +5,7 @@ export function safePerpendicular(axis) {
   return new THREE.Vector3().crossVectors(axis, ref).normalize();
 }
 
-export function planeNormal(atom, other, positions, neighbors) {
+function geometricPlaneNormal(atom, other, positions, neighbors) {
   const axis = positions.get(other).clone().sub(positions.get(atom)).normalize();
   for (const n of neighbors.get(atom) || []) {
     if (n === other) continue;
@@ -19,7 +19,52 @@ export function planeNormal(atom, other, positions, neighbors) {
     const cross = new THREE.Vector3().crossVectors(axis, delta);
     if (cross.lengthSq() > .015) return cross.normalize();
   }
-  return safePerpendicular(axis);
+  return null;
+}
+
+export function planeNormal(atom, other, positions, neighbors) {
+  return geometricPlaneNormal(atom, other, positions, neighbors) ||
+    safePerpendicular(positions.get(other).clone().sub(positions.get(atom)).normalize());
+}
+
+// Linear cumulenes have no local plane at an internal atom. Using the same
+// arbitrary normal for every double bond incorrectly collapses its two p axes.
+// Propagate perpendicular axes from an end-group plane, or choose an arbitrary
+// orthogonal pair for a wholly linear molecule such as CO2. This is a localized
+// bonding schematic, not a calculated set of molecular orbitals.
+function piBondNormals(bonds, positions, neighbors) {
+  const entries = bonds.filter(b => b.order >= 2 || b.aromatic)
+    .filter(b => positions.has(b.a) && positions.has(b.b))
+    .map(bond => ({bond, normal: geometricPlaneNormal(bond.a, bond.b, positions, neighbors), adjacent: []}))
+    .sort((a, b) => Math.min(a.bond.a, a.bond.b) - Math.min(b.bond.a, b.bond.b) || Math.max(a.bond.a, a.bond.b) - Math.max(b.bond.a, b.bond.b));
+  const doubles = new Map();
+  for (const entry of entries) if (entry.bond.order === 2 && !entry.bond.aromatic) {
+    for (const id of [entry.bond.a, entry.bond.b]) {
+      if (!doubles.has(id)) doubles.set(id, []);
+      doubles.get(id).push(entry);
+    }
+  }
+  for (const [id, pair] of doubles) {
+    if (pair.length !== 2 || neighbors.get(id)?.length !== 2) continue;
+    const directions = pair.map(({bond}) => positions.get(bond.a === id ? bond.b : bond.a).clone().sub(positions.get(id)).normalize());
+    if (directions[0].dot(directions[1]) > -.98) continue;
+    pair[0].adjacent.push(pair[1]); pair[1].adjacent.push(pair[0]);
+  }
+  const propagate = seed => {
+    const queue = [seed];
+    for (let i = 0; i < queue.length; i++) for (const next of queue[i].adjacent) {
+      if (next.normal) continue;
+      const axis = positions.get(next.bond.b).clone().sub(positions.get(next.bond.a)).normalize();
+      next.normal = new THREE.Vector3().crossVectors(axis, queue[i].normal).normalize();
+      queue.push(next);
+    }
+  };
+  for (const entry of entries) if (entry.normal) propagate(entry);
+  for (const entry of entries) if (!entry.normal) {
+    entry.normal = safePerpendicular(positions.get(entry.bond.b).clone().sub(positions.get(entry.bond.a)).normalize());
+    propagate(entry);
+  }
+  return new Map(entries.map(({bond, normal}) => [bond, normal]));
 }
 
 // Each p axis is geometric. Align its otherwise arbitrary sign across adjacent
@@ -27,10 +72,11 @@ export function planeNormal(atom, other, positions, neighbors) {
 // Keeping separate orthogonal records also handles triple bonds and cumulenes.
 export function alignedPiOrbitals(bonds, positions, neighbors, atoms = []) {
   const records = [], byAtom = new Map();
+  const normals = piBondNormals(bonds, positions, neighbors);
   for (const bond of bonds) {
     if (!(bond.order >= 2 || bond.aromatic) || !positions.has(bond.a) || !positions.has(bond.b)) continue;
     const axis = positions.get(bond.b).clone().sub(positions.get(bond.a)).normalize();
-    const normal = planeNormal(bond.a, bond.b, positions, neighbors);
+    const normal = normals.get(bond);
     const directions = bond.order === 3 ? [normal, new THREE.Vector3().crossVectors(axis, normal).normalize()] : [normal];
     for (const atomId of [bond.a, bond.b]) {
       const existing = byAtom.get(atomId) || [];
@@ -120,8 +166,21 @@ export function electronicPresentation(model, view = 'hybrid', stateIndex = null
   return { charges, pairCounts, bondOrders, hybridOrders };
 }
 
-export function displayedLonePairs(atom, count, view, positions, neighbors) {
+export function displayedLonePairs(atom, count, view, positions, neighbors, piOrbitals = []) {
   const pairs = (atom.lonePairs || []).filter(pair => Array.isArray(pair.direction) && pair.direction.length === 3 && pair.direction.every(Number.isFinite)).map(pair => ({ ...pair, direction: [...pair.direction] }));
+  const localPairs = pairs.filter(pair => pair.kind !== 'delocalized');
+  const axes = piOrbitals.filter(orbital => orbital.atomId === atom.id);
+  // A terminal sp2 atom's two localized pair glyphs share its sigma plane.
+  // Rotate that otherwise arbitrary plane with the chosen p axis (notably CO2),
+  // preserving the pair count and each glyph's bond angle.
+  if (atom.hybridization === 'SP2' && neighbors.get(atom.id)?.length === 1 && localPairs.length === 2 && axes.length === 1) {
+    const axis = positions.get(neighbors.get(atom.id)[0]).clone().sub(positions.get(atom.id)).normalize();
+    const sideways = new THREE.Vector3().crossVectors(axis, axes[0].direction).normalize();
+    if (sideways.lengthSq() > .5) localPairs.forEach((pair, index) => {
+      const along = Math.max(-1, Math.min(1, new THREE.Vector3(...pair.direction).normalize().dot(axis)));
+      pair.direction = axis.clone().multiplyScalar(along).addScaledVector(sideways, (index ? -1 : 1) * Math.sqrt(1 - along * along)).toArray();
+    });
+  }
   count = Number.isInteger(count) ? Math.max(0, Math.min(count, 4)) : pairs.length;
   if (view !== 'lewis') return pairs.filter(pair => pair.kind !== 'delocalized');
   // Exchanging terminal atoms in an equivalent contributor transfers the

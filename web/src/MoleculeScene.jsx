@@ -445,9 +445,10 @@ const MoleculeScene = forwardRef(function MoleculeScene({
     const dotMaterial = new THREE.MeshBasicMaterial({ color: '#168f89' });
     r.resources.push(lpMaterial, dotMaterial);
     let displayedPairs = 0;
+    const orbitalAxes = showPi || showLonePairs ? alignedPiOrbitals(model.bonds, positions, neighbors, model.atoms) : [];
     if (showLonePairs) for (const atom of model.atoms) {
       if (!visible(atom.id)) continue;
-      for (const pair of displayedLonePairs(atom, presentation.pairCounts.get(atom.id), electronicView, positions, neighbors)) {
+      for (const pair of displayedLonePairs(atom, presentation.pairCounts.get(atom.id), electronicView, positions, neighbors, orbitalAxes)) {
         const rawDirection = Array.isArray(pair) ? pair : pair.direction;
         if (!Array.isArray(rawDirection) || rawDirection.length !== 3) continue;
         const direction = V(rawDirection).normalize();
@@ -479,7 +480,7 @@ const MoleculeScene = forwardRef(function MoleculeScene({
         }
       }
     }
-    const piOrbitals = showPi ? alignedPiOrbitals(model.bonds, positions, neighbors, model.atoms).filter(({atomId}) => visible(atomId)) : [];
+    const piOrbitals = showPi ? orbitalAxes.filter(({atomId}) => visible(atomId)) : [];
     const piSystems = (model.resonance?.groups || []).filter(group => Number.isFinite(group.piElectrons));
     const systemDescription = piSystems.map((group, index) => `π 系統 ${index + 1} 共 ${group.piElectrons} 個電子`).join('；');
     r.renderer.domElement.setAttribute('data-electronic-view', electronicView);
@@ -532,7 +533,7 @@ const MoleculeScene = forwardRef(function MoleculeScene({
       {showPi&&<span className="orbital-caption">p 軌域示意 · 雙葉為同一軌域</span>}
     </div>}
     {error && <div className="scene-error" role="alert">{error}</div>}
-    {!model?.atoms?.length && !error && <div className="scene-empty"><span className="scene-empty-symbol">＋</span><strong>從一個原子開始</strong><span>建立連接關係，計算真實的三維構形</span></div>}
+    {!model?.atoms?.length && !error && <div className="scene-empty"><span className="scene-empty-symbol">＋</span><strong>從一個原子開始</strong><span>建立連接關係，估算分子的三維構形</span></div>}
     <div className="scene-axis" aria-hidden="true"><svg ref={axesRef} width="86" height="86" viewBox="0 0 86 86"><path data-axis-line="0" d="M43 43L70 43" stroke="#a63c3c"/><path data-axis-line="1" d="M43 43L43 16" stroke="#275d95"/><path data-axis-line="2" d="M43 43L25 61" stroke="#2e7147"/><circle cx="43" cy="43" r="2.8" fill="#45566a"/><text data-axis-label="0" x="78" y="47" fill="#a63c3c">X</text><text data-axis-label="1" x="43" y="12" fill="#275d95">Y</text><text data-axis-label="2" x="16" y="74" fill="#2e7147">Z</text></svg><span>3D</span></div>
   </div>;
 });

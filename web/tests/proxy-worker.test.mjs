@@ -82,6 +82,34 @@ test('health proxy succeeds through real workerd fetch',async()=>{
   assert.equal(received.headers.authorization,'Bearer test-only-never-a-real-token');
 });
 
+test('workerd rejects malformed UTF-8, non-finite numbers and invalid Unicode before fetching',async()=>{
+  const bodies=[Buffer.from([0x7b,0x22,0x78,0x22,0x3a,0x22,0xff,0x22,0x7d]),
+    '{"samples":1e309}','{"name":"\\ud800"}',
+    '{"nested":'+'['.repeat(65)+'0'+']'.repeat(65)+'}'];
+  for(const body of bodies){
+    const response=await mf.dispatchFetch('https://studio.example/api/molecule',{
+      method:'POST',headers:{Origin:'https://studio.example','Content-Type':'application/json'},body,
+    });
+    assert.equal(response.status,400);
+    assert.match((await response.json()).error,/無法讀取/);
+  }
+  assert.equal(upstreamCalls.length,0);
+});
+
+test('workerd preserves valid Unicode names while rejecting a malformed backend response',async()=>{
+  const payload={action:'generate',smiles:'O',name:'水 🧪'};
+  upstreamReplies.push(ready,{status:200,body:{formula:'H2O',name:payload.name},headers:jsonHeaders});
+  const valid=await mf.dispatchFetch('https://studio.example/api/molecule',requestOptions(payload));
+  assert.equal(valid.status,200);
+  assert.equal((await valid.json()).name,payload.name);
+  assert.deepEqual(JSON.parse(upstreamCalls.at(-1).body),payload);
+  upstreamReplies.push({status:200,raw:'{"energy":1e309}',headers:jsonHeaders});
+  const invalid=await mf.dispatchFetch('https://studio.example/api/molecule',requestOptions(payload));
+  assert.equal(invalid.status,503);
+  assert.match((await invalid.json()).error,/暫時無法連線/);
+  assert.deepEqual(upstreamCalls.map(call=>call.method),['GET','POST','POST']);
+});
+
 test('all upstream redirect codes are rejected without following or forwarding the credential',async()=>{
   for(const phase of ['warmup','compute'])for(const status of [301,302,303,307,308]) {
     const callsBefore=upstreamCalls.length;

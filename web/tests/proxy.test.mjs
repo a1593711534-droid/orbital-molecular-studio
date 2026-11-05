@@ -23,6 +23,55 @@ test('anonymous computation is rejected before contacting backend',async()=>{glo
 test('cross-origin and cross-site requests cannot use server credential',async()=>{assert.equal((await proxyChemistry(request({}, {Origin:'https://other.example'}),'/api/molecule')).status,403);assert.equal((await proxyChemistry(request({}, {'Sec-Fetch-Site':'cross-site'}),'/api/molecule')).status,403);});
 test('invalid JSON and actual oversized body are rejected',async()=>{assert.equal((await proxyChemistry(request('{'),'/api/molecule')).status,400);assert.equal((await proxyChemistry(request('x'.repeat(2_000_001)),'/api/molecule')).status,413);});
 
+test('overflow numbers, lone surrogates and excessive nesting fail before waking the backend',async()=>{
+  let calls=0;globalThis.fetch=async()=>{calls++;throw new Error('Must not contact backend');};
+  for(const body of ['{"samples":1e309}','{"position":[-1e999]}','{"name":"\\ud800"}','{"\\udfff":"O"}',
+    '{"nested":'+'['.repeat(65)+'0'+']'.repeat(65)+'}']){
+    assert.equal((await proxyChemistry(request(body),'/api/molecule')).status,400);
+  }
+  assert.equal(calls,0);
+});
+
+test('malformed UTF-8 and JSON-like media types cannot silently alter an import',async()=>{
+  const bytes=Buffer.concat([Buffer.from('{"name":"'),Buffer.from([0xff]),Buffer.from('","smiles":"O"}')]);
+  const invalid=new Request(base+'/api/molecule',{method:'POST',headers:{'Content-Type':'application/json',Origin:base},body:bytes});
+  assert.equal((await proxyChemistry(invalid,'/api/molecule')).status,400);
+  assert.equal((await proxyChemistry(request({}, {'Content-Type':'application/json-bogus'}),'/api/molecule')).status,415);
+});
+
+test('upload failure returns JSON and never begins a calculation',async()=>{
+  const failed=new Request(base+'/api/molecule',{method:'POST',headers:{'Content-Type':'application/json',Origin:base},
+    body:new ReadableStream({start(controller){controller.error(new Error('connection lost'));}}),duplex:'half'});
+  const response=await proxyChemistry(failed,'/api/molecule');
+  assert.equal(response.status,400);assert.match((await response.json()).error,/無法讀取/);
+});
+
+test('a stalled upload is cancelled after ten seconds without waking the backend',async t=>{
+  fakeTime(t);let cancelled=false;
+  const stalled=new Request(base+'/api/molecule',{method:'POST',headers:{'Content-Type':'application/json',Origin:base},
+    body:new ReadableStream({cancel(){cancelled=true;}}),duplex:'half'});
+  const pending=proxyChemistry(stalled,'/api/molecule');await setImmediate();await advance(t,10000);
+  const response=await pending;assert.equal(response.status,408);assert.equal(cancelled,true);
+  assert.match((await response.json()).error,/逾時/);
+});
+
+test('invalid or oversized upstream JSON fails cleanly and invalidates readiness',async()=>{
+  for(const bad of ['{"formula":', '[]', '{"energy":1e309}', 'x'.repeat(16*1024*1024+1)]){
+    let gets=0,posts=0,fail=true;
+    process.env.CHEMISTRY_API_TOKEN='test-'+bad.length;
+    globalThis.fetch=async url=>{if(isHealth(url)){gets++;return Response.json(health);}posts++;return fail?new Response(bad,{headers:{'Content-Type':'application/json'}}):Response.json({formula:'H2O'});};
+    const response=await proxyChemistry(request(),'/api/molecule');assert.equal(response.status,503);assert.equal(posts,1);
+    fail=false;assert.equal((await proxyChemistry(request(),'/api/molecule')).status,200);assert.equal(gets,2);assert.equal(posts,2);
+  }
+});
+
+test('paired Unicode escapes remain valid and the exact request body is preserved',async()=>{
+  let actual;
+  globalThis.fetch=async(url,options)=>{if(isHealth(url))return Response.json(health);actual=options.body;return Response.json({formula:'H2O'});};
+  const body='{"smiles":"O","name":"\\ud83e\\uddea"}';
+  assert.equal((await proxyChemistry(request(body),'/api/molecule')).status,200);assert.equal(actual,body);
+});
+
 test('ready health precedes exactly one authenticated POST with exact body',async()=>{
   const payload={action:'generate',smiles:'C[N+](=O)[O-]'};const calls=[];
   globalThis.fetch=async(url,options)=>{calls.push({url:String(url),options});assert.equal(options.headers.Authorization,'Bearer test-only-secret');assert.equal(options.redirect,'manual');return Response.json(isHealth(url)?health:{displayFormula:'CH3NO2'});};

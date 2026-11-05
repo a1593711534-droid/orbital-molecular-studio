@@ -14,6 +14,7 @@ import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
+from deploy.json_transport import load_request
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "python_lib"))
@@ -21,7 +22,7 @@ import rdkit
 import chemistry
 
 APP = "orbital-molecular-studio"
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 INSTANCE = hashlib.sha256(ROOT.as_posix().casefold().encode("utf-8")).hexdigest()[:20]
 DIST = ROOT / "dist"
 MAX_BODY = 2 * 1024 * 1024
@@ -146,10 +147,8 @@ class Handler(BaseHTTPRequestHandler):
             raw = self.rfile.read(size)
             if len(raw) != size:
                 raise ValueError("Incomplete request")
-            payload = json.loads(raw.decode("utf-8-sig"), parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Non-finite number")))
-            if not isinstance(payload, dict):
-                raise ValueError("Expected object")
-        except (ValueError, UnicodeError, socket.timeout):
+            payload = load_request(raw)
+        except (ValueError, UnicodeError, RecursionError, socket.timeout):
             self._json(400, {"error": "無法讀取 JSON 資料，請檢查檔案格式。"})
             return
         if not COMPUTE_SLOTS.acquire(blocking=False):

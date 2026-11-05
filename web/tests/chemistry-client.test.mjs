@@ -82,3 +82,27 @@ test('a cancelled in-flight result cannot populate the preview cache',async()=>{
   globalThis.fetch=async()=>{calls++;return Response.json(preview('C'));};
   await chemistryRequest(inspect('C'));assert.equal(calls,2);
 });
+
+test('invalid JSON response shapes produce a service error rather than a TypeError',async()=>{
+  for(const body of [null,42,[], 'upstream unavailable']) {
+    globalThis.fetch=async()=>Response.json(body);
+    await assert.rejects(chemistryRequest({action:'generate',smiles:'C'},{hosted:true}),/雲端服務正在啟動或暫時無法回應/);
+  }
+});
+
+test('HTML authentication and rate-limit responses retain their actionable status',async()=>{
+  for(const [status,message] of [[401,/登入已逾時/],[429,/計算服務忙碌中/]]) {
+    globalThis.fetch=async()=>new Response('<html>upstream error</html>',{status});
+    await assert.rejects(chemistryRequest(inspect('C'),{hosted:true}),message);
+  }
+});
+
+test('cancelling while reading the response body remains an AbortError',async()=>{
+  const controller=new AbortController();
+  let rejectBody;
+  globalThis.fetch=async()=>({ok:true,status:200,json:()=>new Promise((resolve,reject)=>{rejectBody=reject;})});
+  const pending=chemistryRequest(inspect('C'),{signal:controller.signal});
+  await new Promise(resolve=>setImmediate(resolve));
+  controller.abort();rejectBody(new DOMException('The operation was aborted','AbortError'));
+  await assert.rejects(pending,{name:'AbortError'});
+});

@@ -1,6 +1,8 @@
 """E/Z editing is checked against independently inferred 3D stereochemistry."""
 import copy
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 
 from rdkit import Chem
 from rdkit.Chem import rdCIPLabeler, rdMolTransforms
@@ -35,6 +37,71 @@ def actual_labels(block):
 
 
 class StereoEditingTests(unittest.TestCase):
+    def test_enhanced_stereo_groups_cannot_silently_become_one_isomer(self):
+        from rdkit.Chem import AllChem
+        for group in ["&1", "o1"]:
+            smiles = "C[C@H](F)[C@H](Cl)Br |" + group + ":1,3|"
+            mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+            self.assertEqual(AllChem.EmbedMolecule(mol, randomSeed=7), 0)
+            for payload in [{"smiles": smiles}, {"action": "analyze", "molblock": Chem.MolToMolBlock(mol, forceV3000=True)}]:
+                with self.subTest(group=group, action=payload.get("action", "generate")), self.assertRaisesRegex(ChemistryError, "AND／OR"):
+                    process(payload)
+        model = generate("C[C@H](F)[C@H](Cl)Br |a:1,3|")
+        self.assertEqual(len(model["stereoSummary"]["centers"]), 2)
+
+    def test_true_atomic_cip_for_ring_ligands_and_pseudoasymmetry(self):
+        # First two structures are RDKit Cookbook's stereo-annotation examples.
+        cases = [("C1CC1[C@H](F)C1CCC1", {3: "S"}),
+                 ("F[C@H]1CC[C@H](O)CC1", {1: "r", 4: "r"}),
+                 ("C[C@H](O)[C@H](O)[C@@H](C)O", {1: "S", 3: "s", 5: "R"})]
+        for smiles, expected in cases:
+            with self.subTest(smiles=smiles):
+                model = generate(smiles)
+                labels = {a["id"]: a["cip"] for a in model["atoms"] if a["cip"]}
+                self.assertEqual(labels, expected)
+                for conformer in model["conformers"]:
+                    self.assertEqual(actual_labels(conformer["molblock"])[0], expected)
+                for action in ["analyze", "optimize"]:
+                    model = process({"action": action, "molblock": model["molblock"], "stereoGraph": model["graph"]})
+                    self.assertEqual({a["id"]: a["cip"] for a in model["atoms"] if a["cip"]}, expected)
+                rebuilt = process({"graph": model["graph"], "samples": 1})
+                self.assertEqual({a["id"]: a["cip"] for a in rebuilt["atoms"] if a["cip"]}, expected)
+
+    def test_mirrored_pseudoasymmetric_project_cannot_override_geometry(self):
+        model = generate("C[C@H](O)[C@H](O)[C@@H](C)O")
+        mol = Chem.MolFromMolBlock(model["molblock"], removeHs=False)
+        conf = mol.GetConformer()
+        for index, (x, y, z) in enumerate(conf.GetPositions()):
+            conf.SetAtomPosition(index, (-float(x), float(y), float(z)))
+        with self.assertRaisesRegex(ChemistryError, "四面體"):
+            process({"action": "analyze", "molblock": Chem.MolToMolBlock(mol), "stereoGraph": model["graph"]})
+
+    def test_force_field_cannot_return_reflected_coordinates_with_old_labels(self):
+        original = generate("C[C@H](F)Cl")
+
+        def reflected_field(mol, conf_id=-1):
+            conf = mol.GetConformer(conf_id)
+            def minimize(**kwargs):
+                for index, (x, y, z) in enumerate(conf.GetPositions()):
+                    conf.SetAtomPosition(index, (-float(x), float(y), float(z)))
+                return 0
+            return SimpleNamespace(Minimize=minimize, CalcEnergy=lambda: 0.0), "MMFF94s"
+
+        with patch("chemistry._field", side_effect=reflected_field):
+            for payload in [{"smiles": "C[C@H](F)Cl", "samples": 1},
+                            {"action": "optimize", "molblock": original["molblock"], "stereoGraph": original["graph"]}]:
+                with self.subTest(action=payload.get("action", "generate")), self.assertRaisesRegex(ChemistryError, "未能保留指定"):
+                    process(payload)
+
+    def test_generated_unspecified_neighbor_remains_unspecified(self):
+        model = generate("C[C@H](F)C(O)Cl")
+        labels = {a["id"]: a["cip"] for a in model["atoms"] if a["cip"]}
+        self.assertEqual(set(labels), {1})
+        for action in ["analyze", "optimize"]:
+            model = process({"action": action, "molblock": model["molblock"], "stereoGraph": model["graph"]})
+            self.assertEqual({a["id"]: a["cip"] for a in model["atoms"] if a["cip"]}, labels)
+            self.assertEqual(model["graph"]["atoms"][3]["chiralTag"], 0)
+
     def test_atom_by_atom_butene_then_set_both_actual_isomers(self):
         model = generate("C")
         for number in range(1, 4):

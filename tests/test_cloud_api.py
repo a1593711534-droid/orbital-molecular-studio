@@ -102,11 +102,19 @@ class CloudTransportTests(unittest.IsolatedAsyncioTestCase):
         self.executor.assert_not_awaited()
 
     async def test_malformed_json_nonobjects_and_nonfinite_numbers_are_rejected(self):
-        for body in (b"", b"{bad", b"[]", b"null", b"1", b'{"samples":NaN}', b'{"samples":Infinity}', b"\xff"):
+        for body in (b"", b"{bad", b"[]", b"null", b"1", b'{"samples":NaN}', b'{"samples":Infinity}',
+                     b'{"samples":1e309}', b'{"coordinates":[-1e999]}',
+                     b'{"name":"\\ud800"}', b'{"\\udfff":"O"}',
+                     b'{"nested":' + b'[' * 2000 + b'0' + b']' * 2000 + b'}', b"\xff"):
             with self.subTest(body=body):
                 result = await request(self.api, body=body)
                 self.assertEqual(result["status"], 400)
         self.executor.assert_not_awaited()
+
+    async def test_valid_surrogate_pair_is_preserved_as_unicode(self):
+        result = await request(self.api, body=b'{"smiles":"O","name":"\\ud83e\\uddea"}')
+        self.assertEqual(result["status"], 200)
+        self.executor.assert_awaited_once_with({"smiles": "O", "name": "🧪"}, 45.0)
 
     async def test_declared_body_size_is_checked(self):
         for value, expected in [(b"no", 400), (b"0", 413), (b"-1", 413), (str(cloud_api.MAX_BODY + 1).encode(), 413)]:

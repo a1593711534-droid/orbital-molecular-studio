@@ -187,6 +187,9 @@ def _inspect(payload):
         options.padding = .12
         options.addStereoAnnotation = True
         options.explicitMethyl = True
+        # The legacy R/S ranks are only approximate (notably for ring ligands
+        # and pseudoasymmetric centers). Use the same true CIP labels as 3D.
+        _assign_true_atom_cip(display)
         rdMolDraw2D.PrepareAndDrawMolecule(drawer, display)
         drawer.FinishDrawing()
         svg = drawer.GetDrawingText()
@@ -341,6 +344,32 @@ def _perp(v):
     return _unit(np.cross(v, axis))
 
 
+def _graph_atom_integer(value, lower, upper, message):
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ChemistryError(message) from exc
+    if (isinstance(value, bool) or isinstance(value, float) and value != number
+            or not lower <= number <= upper):
+        raise ChemistryError(message)
+    return number
+
+
+def _validate_smiles_atom_numbers(smiles):
+    # Validate before the SMILES reader stores isotope, H count and charge
+    # in narrow integer fields. The optional molecule name is not chemistry.
+    for token in re.findall(r"\[([^\]]*)\]", smiles.split(maxsplit=1)[0]):
+        isotope = re.match(r"(\d+)(?=[A-Za-z*])", token)
+        if isotope and int(isotope[1]) > 65535:
+            raise ChemistryError("同位素質量數無效，請確認同位素標記。")
+        hydrogens = re.search(r"H(\d+)", token)
+        if hydrogens and int(hydrogens[1]) > 200:
+            raise ChemistryError("氫原子數超出此模型的 200 個總原子上限。")
+        charge = re.search(r"[+-](\d+)", token)
+        if charge and int(charge[1]) > 3:
+            raise ChemistryError("形式電荷必須介於 −3 與 +3。")
+
+
 def _read_graph(graph):
     atoms, bonds = graph.get("atoms", []), graph.get("bonds", [])
     if not atoms or len(atoms) > 200:
@@ -355,12 +384,13 @@ def _read_graph(graph):
         if old_id in mapping:
             raise ChemistryError("原子識別碼重複。")
         atom = Chem.Atom(element)
-        atom.SetFormalCharge(int(data.get("charge", 0)))
-        if abs(atom.GetFormalCharge()) > 3:
-            raise ChemistryError("形式電荷必須介於 −3 與 +3。")
-        atom.SetIsotope(int(data.get("isotope", 0)))
+        charge = _graph_atom_integer(data.get("charge", 0), -3, 3, "形式電荷必須介於 −3 與 +3。")
+        atom.SetFormalCharge(charge)
+        isotope = _graph_atom_integer(data.get("isotope", 0), 0, 65535, "同位素質量數無效，請確認同位素標記。")
+        atom.SetIsotope(isotope)
         atom.SetIsAromatic(bool(data.get("aromatic", False)))
-        atom.SetNumExplicitHs(int(data.get("explicitHs", 0)))
+        hydrogens = _graph_atom_integer(data.get("explicitHs", 0), 0, 200, "氫原子數無效或超出上限。")
+        atom.SetNumExplicitHs(hydrogens)
         atom.SetNoImplicit(bool(data.get("noImplicit", False)))
         tag = int(data.get("chiralTag", 0))
         if tag in Chem.ChiralType.values:
@@ -411,6 +441,7 @@ def _read(payload):
                 smiles = str(payload.get("smiles", "")).strip()
                 if not smiles or len(smiles) > 4000:
                     raise ChemistryError("請輸入有效的 SMILES，或先建立分子連接圖。")
+                _validate_smiles_atom_numbers(smiles)
                 mol = Chem.MolFromSmiles(smiles, sanitize=False)
             if mol is None:
                 raise ChemistryError("無法解析結構：請檢查 SMILES、價數、環閉合與立體化學標記。")
@@ -429,7 +460,20 @@ def _read(payload):
             raise ChemistryError(f"尚未支援 {atom.GetSymbol()} 的可靠幾何模型；此版本不推測金屬配位形狀。")
         if atom.GetNumRadicalElectrons():
             raise ChemistryError("此版本不支援自由基的幾何與孤電子對推估；請檢查價數及形式電荷。")
+        if atom.GetIsotope() and Chem.GetPeriodicTable().GetMassForIsotope(atom.GetAtomicNum(), atom.GetIsotope()) <= 0:
+            raise ChemistryError(f"原子 {atom.GetIdx()+1} 的同位素質量數沒有可用資料；請確認同位素標記。")
+        if atom.GetChiralTag() not in {Chem.ChiralType.CHI_UNSPECIFIED, Chem.ChiralType.CHI_TETRAHEDRAL_CW, Chem.ChiralType.CHI_TETRAHEDRAL_CCW}:
+            raise ChemistryError("此版本僅支援四面體原子立體化學；無法可靠保留其他原子立體標記。")
+    if any(b.GetBondType() not in BOND_TYPES.values() for b in mol.GetBonds()):
+        raise ChemistryError("此版本僅支援單鍵、雙鍵、三鍵與芳香鍵；配位鍵或未指定鍵級尚未有可靠的幾何及電子計數模型。")
+    if any(group.GetGroupType() != Chem.StereoGroupType.STEREO_ABSOLUTE for group in mol.GetStereoGroups()):
+        raise ChemistryError("此檔案含相對或混合立體化學（AND／OR 群組）；單一構型工作室無法完整表示，請先明確指定要檢視的異構物。")
     mol = Chem.AddHs(mol, addCoords=bool(mol.GetNumConformers()))
+    # O=O is a common valid connectivity notation, but its Lewis graph alone
+    # gives zero radicals. The ground state of neutral dioxygen is triplet.
+    # Check after adding H so that peroxide (OO) is not mistaken for O2.
+    if mol.GetNumAtoms() == 2 and all(a.GetAtomicNum() == 8 for a in mol.GetAtoms()) and Chem.GetFormalCharge(mol) == 0:
+        raise ChemistryError("中性 O₂ 的基態為三重態，具有兩個未成對電子；目前的閉殼層模型無法呈現此電子組態。")
     _reject_high_domain_centers(mol)
     if mol.GetNumAtoms() > 200:
         raise ChemistryError("補氫後超過 200 個原子，請縮小結構。")
@@ -490,6 +534,17 @@ def _true_cip(mol):
     rdCIPLabeler.AssignCIPLabels(probe, maxRecursiveIterations=200000)
     return ({a.GetIdx(): a.GetProp("_CIPCode") for a in probe.GetAtoms() if a.HasProp("_CIPCode")},
             {b.GetIdx(): b.GetProp("_CIPCode") for b in probe.GetBonds() if b.HasProp("_CIPCode")})
+
+
+def _assign_true_atom_cip(mol):
+    """Replace approximate/stale atomic labels without changing stereo tags."""
+    labels = _true_cip(mol)[0]
+    for atom in mol.GetAtoms():
+        if atom.HasProp("_CIPCode"):
+            atom.ClearProp("_CIPCode")
+        if atom.GetIdx() in labels:
+            atom.SetProp("_CIPCode", labels[atom.GetIdx()])
+    return labels
 
 
 def _double_bond_control(mol, bond, potential, descriptors):
@@ -566,13 +621,26 @@ def _stereo_controls(mol):
 
 def _verify_stereo_geometry(mol, conf_id, expected):
     """Re-infer stereochemistry solely from coordinates, never stored tags."""
+    if not any(expected):
+        return
     probe = Chem.Mol(mol)
+    atom_scope = {a.GetIdx() for a in mol.GetAtoms() if a.GetChiralTag() != Chem.ChiralType.CHI_UNSPECIFIED}
+    bond_scope = {b.GetIdx() for b in mol.GetBonds() if b.GetStereo() not in {Chem.BondStereo.STEREONONE, Chem.BondStereo.STEREOANY}}
     for atom in probe.GetAtoms():
         atom.SetChiralTag(Chem.ChiralType.CHI_UNSPECIFIED)
     for bond in probe.GetBonds():
         bond.SetStereo(Chem.BondStereo.STEREONONE)
         bond.SetBondDir(Chem.BondDir.NONE)
     Chem.AssignStereochemistryFrom3D(probe, confId=conf_id, replaceExistingTags=True)
+    # Coordinates also assign previously unspecified centers. They must not
+    # change the sequence rules used to verify a defined pseudoasymmetric one.
+    for atom in probe.GetAtoms():
+        if atom.GetIdx() not in atom_scope:
+            atom.SetChiralTag(Chem.ChiralType.CHI_UNSPECIFIED)
+    for bond in probe.GetBonds():
+        if bond.GetIdx() not in bond_scope:
+            bond.SetStereo(Chem.BondStereo.STEREONONE)
+            bond.SetBondDir(Chem.BondDir.NONE)
     actual = _true_cip(probe)
     for requested, observed in zip(expected, actual):
         if any(observed.get(index) != label for index, label in requested.items()):
@@ -885,13 +953,18 @@ def _restore_stereo_scope(mol, graph):
         index = {int(a["id"]): i for i, a in enumerate(graph["atoms"])}
         for data in graph["atoms"]:
             atom = mol.GetAtomWithIdx(int(data["id"]))
-            ref = reference.GetAtomWithIdx(index[int(data["id"])])
             if not int(data.get("chiralTag", 0)):
                 atom.SetChiralTag(Chem.ChiralType.CHI_UNSPECIFIED)
                 if atom.HasProp("_CIPCode"):
                     atom.ClearProp("_CIPCode")
-            elif ref.HasProp("_CIPCode"):
-                if not atom.HasProp("_CIPCode") or atom.GetProp("_CIPCode") != ref.GetProp("_CIPCode"):
+        # Compare after restoring the original scope: inferred neighboring
+        # centers must not change a defined pseudoasymmetric descriptor.
+        reference_labels, actual_labels = _true_cip(reference)[0], _true_cip(mol)[0]
+        for data in graph["atoms"]:
+            source_id = int(data["id"])
+            expected = reference_labels.get(index[source_id])
+            if int(data.get("chiralTag", 0)) and expected is not None:
+                if actual_labels.get(source_id) != expected:
                     raise ChemistryError("輸入三維座標與已指定的四面體立體化學不一致，請重新生成結構。")
         for bond in mol.GetBonds():
             bond.SetBondDir(Chem.BondDir.NONE)
@@ -940,13 +1013,14 @@ def _serialize(mol, records, method, warnings=None):
     positions = np.array(conf.GetPositions())
     kekule = Chem.Mol(mol)
     Chem.Kekulize(kekule, clearAromaticFlags=False)
+    atom_cip = _true_cip(mol)[0]
     atoms = []
     for a in mol.GetAtoms():
         atoms.append({"id": a.GetIdx(), "element": a.GetSymbol(), "charge": a.GetFormalCharge(),
                       "position": [round(float(v), 6) for v in positions[a.GetIdx()]],
                       "hybridization": str(a.GetHybridization()), "degree": a.GetDegree(),
                       "lonePairs": _lone_pairs(mol, a, kekule, positions),
-                      "cip": a.GetProp("_CIPCode") if a.HasProp("_CIPCode") else None,
+                      "cip": atom_cip.get(a.GetIdx()),
                       "radicals": a.GetNumRadicalElectrons(), "isotope": a.GetIsotope()})
     bonds = []
     stereo_controls = _stereo_controls(mol)
@@ -1003,6 +1077,8 @@ def _generate_molecule(mol, payload, verify_stereo=None):
         return _co2_model(mol)
     if _is_ozone(mol):
         return _ozone_model(mol)
+    if verify_stereo is None:
+        verify_stereo = _true_cip(mol)
     samples = min(32, max(1, int(payload.get("samples", 8))))
     params = AllChem.ETKDGv3()
     params.randomSeed = int(payload.get("seed", 20261025)) % (2**31 - 1)
@@ -1023,8 +1099,7 @@ def _generate_molecule(mol, payload, verify_stereo=None):
     for cid in ids:
         ff, name = _field(mol, cid)
         status = ff.Minimize(maxIts=1200)
-        if verify_stereo is not None:
-            _verify_stereo_geometry(mol, cid, verify_stereo)
+        _verify_stereo_geometry(mol, cid, verify_stereo)
         records.append({"confId": cid, "energy": ff.CalcEnergy(), "converged": status == 0})
     return _serialize(mol, records, f"ETKDGv3 + {name}", [f"由 {samples} 次構象取樣取得 {len(records)} 個候選；最低能量僅限於本次搜尋，不保證全域最低能量。"])
 
@@ -1081,7 +1156,9 @@ def _existing(payload, action):
     ff, name = _field(mol)
     converged = False
     if action == "optimize":
+        expected_stereo = _true_cip(mol)
         converged = ff.Minimize(maxIts=2000) == 0
+        _verify_stereo_geometry(mol, conf.GetId(), expected_stereo)
         method = f"{name} · 局部最佳化"
     elif action == "rotate":
         method = f"{name} · 手動扭轉（未最佳化）"

@@ -12,11 +12,12 @@ import os
 from pathlib import Path
 import sys
 from deploy.worker_pool import WorkerPool
+from deploy.json_transport import load_request
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_BODY = 2 * 1024 * 1024
 MAX_RESPONSE = 16 * 1024 * 1024
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 
 
 async def compute(payload: dict, timeout: float):
@@ -151,9 +152,7 @@ class OrbitalAPI:
             raw = await asyncio.wait_for(read_body(), 10)
             if length is not None and len(raw) != length:
                 raise ValueError()
-            payload = json.loads(raw.decode("utf-8-sig"), parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
-            if not isinstance(payload, dict):
-                raise ValueError()
+            payload = load_request(raw)
         except ConnectionError:
             return
         except OverflowError:

@@ -1,6 +1,8 @@
 import {getChatGPTUser} from '../app/chatgpt-auth';
 
 const MAX_BODY=2_000_000;
+const MAX_RESPONSE=16*1024*1024;
+const UPLOAD_TIMEOUT_MS=10_000;
 const TOTAL_TIMEOUT_MS=125_000;
 const WARMUP_TIMEOUT_MS=75_000;
 const HEALTH_ATTEMPT_MS=15_000;
@@ -37,6 +39,47 @@ function boundedSignal(parent:AbortSignal,ms:number){
   const timer=setTimeout(abort,ms);
   return {signal:controller.signal,cleanup:()=>{clearTimeout(timer);parent.removeEventListener('abort',abort);}};
 }
+function isJSON(headers:Headers){return headers.get('content-type')?.split(';',1)[0].trim().toLowerCase()==='application/json';}
+class BodySizeError extends Error {}
+function parseObject(text:string){
+  const value=JSON.parse(text);
+  if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Expected object');
+  const pending:Array<[unknown,number]>=[[value,0]];
+  while(pending.length){
+    const [item,depth]=pending.pop()!;
+    if(depth>64)throw new Error('JSON nesting is too deep');
+    if(typeof item==='number'&&!Number.isFinite(item))throw new Error('Non-finite number');
+    // With the Unicode flag, paired surrogates form a single code point and do
+    // not match this range. Lone surrogates cannot cross a UTF-8 worker pipe.
+    if(typeof item==='string'&&/[\uD800-\uDFFF]/u.test(item))throw new Error('Invalid Unicode');
+    if(item&&typeof item==='object')for(const [key,child] of Object.entries(item)){
+      if(/[\uD800-\uDFFF]/u.test(key))throw new Error('Invalid Unicode');
+      pending.push([child,depth+1]);
+    }
+  }
+  return value as Record<string,unknown>;
+}
+async function readText(stream:ReadableStream<Uint8Array>|null,limit:number,signal:AbortSignal){
+  if(!stream)throw new Error('Missing body');
+  const reader=stream.getReader();
+  const abort=()=>{void reader.cancel().catch(()=>{});};
+  const chunks:Uint8Array[]=[];let size=0;
+  signal.addEventListener('abort',abort,{once:true});
+  try{
+    if(signal.aborted)throw new DOMException('Cancelled','AbortError');
+    while(true){
+      const {done,value}=await reader.read();
+      if(signal.aborted)throw new DOMException('Cancelled','AbortError');
+      if(done)break;
+      size+=value.byteLength;
+      if(size>limit){void reader.cancel().catch(()=>{});throw new BodySizeError('Body too large');}
+      chunks.push(value);
+    }
+    const bytes=new Uint8Array(size);let offset=0;
+    for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}
+    return new TextDecoder('utf-8',{fatal:true}).decode(bytes);
+  }finally{signal.removeEventListener('abort',abort);reader.releaseLock();}
+}
 type Readiness={ok:true;health:Record<string,unknown>}|{ok:false;response:Response};
 async function waitUntilReady(endpoint:URL,token:string,signal:AbortSignal,fresh=false):Promise<Readiness>{
   if(signal.aborted)throw new DOMException('Cancelled','AbortError');
@@ -61,10 +104,10 @@ async function waitUntilReady(endpoint:URL,token:string,signal:AbortSignal,fresh
         diagnostic('warmup','rejected',response);await discard(response);
         return {ok:false,response:json(response.status===429?'計算服務忙碌中，請稍後再試。':'雲端服務連線設定需要更新。',response.status===429?429:503)};
       }
-      if(response.status>=500||!response.headers.get('content-type')?.toLowerCase().includes('application/json')){
+      if(response.status>=500||!isJSON(response.headers)){
         diagnostic('warmup','not-ready',response);await discard(response);
       }else{
-        const health=await response.json() as Record<string,unknown>|null;
+        const health=parseObject(await readText(response.body,64*1024,attempt.signal));
         if(response.status===200&&health&&health.status==='ready'&&health.app==='orbital-chemistry'){
           readyService={origin:endpoint.origin,token,expires:Date.now()+READY_TTL_MS,health};
           return {ok:true,health};
@@ -95,15 +138,15 @@ export async function proxyChemistry(request:Request,path:'/api/molecule'|'/api/
   try {endpoint=new URL(base);if(endpoint.protocol!=='https:'||endpoint.username||endpoint.password)throw new Error();endpoint=new URL(path,endpoint.origin);}catch{return json('雲端計算服務設定無效。',503);}
   let body:string|undefined;
   if(path==='/api/molecule'){
-    if(!request.headers.get('content-type')?.toLowerCase().startsWith('application/json'))return json('請使用 JSON 結構資料。',415);
+    if(!isJSON(request.headers))return json('請使用 JSON 結構資料。',415);
     if(Number(request.headers.get('content-length')||0)>MAX_BODY)return json('結構資料上限為 2 MB。',413);
-    const reader=request.body?.getReader();
-    if(!reader)return json('缺少結構資料。',400);
-    const chunks:Uint8Array[]=[];let size=0;
-    while(true){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>MAX_BODY){await reader.cancel();return json('結構資料上限為 2 MB。',413);}chunks.push(value);}
-    const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}
-    body=new TextDecoder().decode(bytes);
-    try{const value=JSON.parse(body);if(!value||typeof value!=='object'||Array.isArray(value))throw new Error();}catch{return json('無法讀取結構資料。',400);}
+    const upload=boundedSignal(request.signal,UPLOAD_TIMEOUT_MS);
+    try{body=await readText(request.body,MAX_BODY,upload.signal);parseObject(body);}
+    catch(error){
+      if(error instanceof BodySizeError)return json('結構資料上限為 2 MB。',413);
+      if(upload.signal.aborted)return json('資料傳送已取消或逾時，請重新操作。',408);
+      return json('無法讀取結構資料。',400);
+    }finally{upload.cleanup();}
   }
   const operation=boundedSignal(request.signal,TOTAL_TIMEOUT_MS);
   let compute:ReturnType<typeof boundedSignal>|undefined;
@@ -121,7 +164,7 @@ export async function proxyChemistry(request:Request,path:'/api/molecule'|'/api/
       diagnostic('compute','configuration',response);await discard(response);
       return json('雲端服務連線設定需要更新。',503);
     }
-    if(!response.headers.get('content-type')?.toLowerCase().includes('application/json')){
+    if(!isJSON(response.headers)){
       forgetReadiness(endpoint,token);
       diagnostic('compute','non-json',response);await discard(response);
       return json('雲端服務暫時無法回應，原結構已保留，請稍後再試。',503);
@@ -129,7 +172,8 @@ export async function proxyChemistry(request:Request,path:'/api/molecule'|'/api/
     if(response.status>=500){forgetReadiness(endpoint,token);diagnostic('compute','upstream-error',response);}
     // Keep the deadline active through the body; receiving headers alone does
     // not mean a calculation finished. Returning a stream would clear it early.
-    const result=await response.text();
+    const result=await readText(response.body,MAX_RESPONSE,compute.signal);
+    parseObject(result);
     return new Response(result,{status:response.status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
   } catch {
     forgetReadiness(endpoint,token);

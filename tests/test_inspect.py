@@ -12,6 +12,43 @@ def inspect(smiles):
 
 
 class InspectTests(unittest.TestCase):
+    def test_preview_uses_true_cip_annotations(self):
+        draw = rdMolDraw2D.PrepareAndDrawMolecule
+        annotations = []
+        def capture(drawer, molecule, *args, **kwargs):
+            annotations.append({a.GetIdx(): a.GetProp("_CIPCode") for a in molecule.GetAtoms() if a.HasProp("_CIPCode")})
+            return draw(drawer, molecule, *args, **kwargs)
+        with patch("chemistry.rdMolDraw2D.PrepareAndDrawMolecule", side_effect=capture):
+            for smiles in ["C1CC1[C@H](F)C1CCC1", "F[C@H]1CC[C@H](O)CC1"]:
+                self.assertTrue(inspect(smiles)["valid"])
+        self.assertEqual(annotations, [{3: "S"}, {1: "r", 4: "r"}])
+
+    def test_unrepresentable_models_are_rejected_in_preview_and_generation(self):
+        from chemistry import ChemistryError
+        cases = [("N->B", "配位鍵"), ("C~C", "未指定鍵級"),
+                 ("[999CH4]", "同位素"), ("[65549CH4]", "同位素"),
+                 ("[CH4+256]", "形式電荷"), ("[CH260]", "氫原子數"),
+                 ("O=O", "三重態"), ("[18O]=O", "三重態"), ("F[C@SP1](Cl)(Br)I", "四面體")]
+        for smiles, message in cases:
+            with self.subTest(smiles=smiles):
+                result = inspect(smiles)
+                self.assertFalse(result["valid"])
+                self.assertIn(message, result["message"])
+                with self.assertRaisesRegex(ChemistryError, message):
+                    process({"smiles": smiles, "samples": 1})
+
+    def test_valid_isotopes_and_absolute_stereo_remain_supported(self):
+        for smiles in ["[13CH4]", "[2H]O[2H]", "OO", "C[C@H](F)[C@H](Cl)Br"]:
+            with self.subTest(smiles=smiles):
+                self.assertTrue(inspect(smiles)["valid"])
+
+    def test_graph_atom_numbers_cannot_wrap_to_a_different_species(self):
+        from chemistry import ChemistryError
+        for field, value in [("charge", 256), ("isotope", 65549), ("explicitHs", 260)]:
+            graph = {"atoms": [{"id": 0, "element": "C", field: value}], "bonds": []}
+            with self.subTest(field=field), self.assertRaises(ChemistryError):
+                process({"graph": graph, "samples": 1})
+
     def test_valid_structure_has_formula_counts_svg_and_index_notes(self):
         result = inspect("CCO")
         self.assertTrue(result["valid"])
