@@ -18,9 +18,13 @@ from rdkit.Chem import rdDepictor
 from rdkit.Chem.Draw import rdMolDraw2D
 from rdkit.Geometry import Point3D
 
-SUPPORTED = {"H", "B", "C", "N", "O", "F", "Si", "P", "S", "Cl", "Br", "I"}
+SUPPORTED = {"H", "Be", "B", "C", "N", "O", "F", "Na", "Mg", "Al", "Si", "P", "S", "Cl", "K", "Ca", "Br", "I", "Xe"}
 VALENCE_ELECTRONS = {"H": 1, "B": 3, "C": 4, "N": 5, "O": 6, "F": 7,
-                     "Si": 4, "P": 5, "S": 6, "Cl": 7, "Br": 7, "I": 7}
+                     "Si": 4, "P": 5, "S": 6, "Cl": 7, "Br": 7, "I": 7,
+                     "Be": 2, "Xe": 8, "Na": 1, "Mg": 2, "Al": 3, "K": 1, "Ca": 2}
+ION_CHARGES = {"H": 1, "Na": 1, "K": 1, "Mg": 2, "Ca": 2, "Al": 3,
+               "F": -1, "Cl": -1, "Br": -1, "I": -1}
+VSEPR_REFERENCE_URL = "https://openstax.org/books/chemistry-2e/pages/7-6-molecular-structure-and-polarity"
 BOND_TYPES = {1: Chem.BondType.SINGLE, 1.5: Chem.BondType.AROMATIC,
               2: Chem.BondType.DOUBLE, 3: Chem.BondType.TRIPLE}
 BASE_WARNING = "座標是孤立分子的力場構象估計，非實驗結構或量子化學結果；孤電子對葉瓣僅示意 Lewis 電子計數與局部方向，並非電子密度。"
@@ -29,6 +33,207 @@ CO2_BOND_LENGTH = 1.1621  # NIST CCCBDB gas-phase experimental Cartesian geometr
 OZONE_REFERENCE_URL = "https://cccbdb.nist.gov/expgeom2x.asp?casno=10028156&charge=0"
 OZONE_BOND_LENGTH = 1.278
 OZONE_BOND_ANGLE = 116.8
+
+# Deliberately finite educational coverage. A parameterized force field alone
+# is not evidence for the geometry of an unfamiliar inorganic compound.
+_SQRT3 = math.sqrt(3)
+_TBP = [[0., 0., 1.], [0., 0., -1.], [1., 0., 0.], [-.5, _SQRT3/2, 0.], [-.5, -_SQRT3/2, 0.]]
+_OCT = [[1., 0., 0.], [-1., 0., 0.], [0., 1., 0.], [0., -1., 0.], [0., 0., 1.], [0., 0., -1.]]
+_TET = [[x/math.sqrt(3) for x in v] for v in [[1,1,1], [1,-1,-1], [-1,1,-1], [-1,-1,1]]]
+_VSEPR_SHAPES = {
+    (2, 0): ("AX2", "直線形", "直線形", [[1.,0.,0.], [-1.,0.,0.]], []),
+    (3, 0): ("AX3", "平面三角形", "平面三角形", _TBP[2:], []),
+    (4, 0): ("AX4", "四面體", "四面體", _TET, []),
+    (3, 1): ("AX3E", "三角錐形", "四面體", _TET[:3], _TET[3:]),
+    (5, 0): ("AX5", "三角雙錐", "三角雙錐", _TBP, []),
+    (4, 1): ("AX4E", "蹺蹺板形", "三角雙錐", _TBP[:2]+_TBP[3:], _TBP[2:3]),
+    (3, 2): ("AX3E2", "T 形", "三角雙錐", _TBP[:3], _TBP[3:]),
+    (2, 3): ("AX2E3", "直線形", "三角雙錐", _TBP[:2], _TBP[2:]),
+    (6, 0): ("AX6", "八面體", "八面體", _OCT, []),
+    (4, 2): ("AX4E2", "平面正方形", "八面體", _OCT[:4], _OCT[4:]),
+}
+
+
+def _teaching_spec(mol):
+    """Recognize exact supported stars before sanitization, never arbitrary valence."""
+    if not 3 <= mol.GetNumAtoms() <= 7:
+        return None
+    if any(a.GetIsAromatic() or a.GetNumExplicitHs() or a.GetNumRadicalElectrons() for a in mol.GetAtoms()):
+        return None
+    centers = [a for a in mol.GetAtoms() if a.GetDegree() == mol.GetNumAtoms()-1 and a.GetDegree() >= 2]
+    if len(centers) != 1 or mol.GetNumBonds() != mol.GetNumAtoms()-1:
+        return None
+    center = centers[0]
+    ends = list(center.GetNeighbors())
+    if any(a.GetDegree() != 1 for a in ends):
+        return None
+    symbol, ligands = center.GetSymbol(), {a.GetSymbol() for a in ends}
+    degree = len(ends)
+    orders = [b.GetBondTypeAsDouble() for b in center.GetBonds()]
+    pairs = None
+    halides = {("Be", "Cl", 2): 0, ("B", "F", 3): 0, ("B", "Cl", 3): 0,
+               ("P", "F", 5): 0, ("P", "Cl", 5): 0, ("S", "F", 4): 1,
+               ("S", "F", 6): 0, ("Cl", "F", 3): 2, ("Br", "F", 3): 2,
+               ("Xe", "F", 2): 3, ("Xe", "F", 4): 2}
+    if len(ligands) == 1 and (symbol, next(iter(ligands)), degree) in halides:
+        if all(a.GetFormalCharge() == 0 for a in mol.GetAtoms()) and all(order == 1 for order in orders):
+            pairs = halides[(symbol, next(iter(ligands)), degree)]
+    oxyanions = {("C", 3, -2): 0, ("N", 3, -1): 0, ("S", 3, 0): 0, ("S", 3, -2): 1,
+                 ("S", 4, -2): 0, ("P", 4, -3): 0}
+    oxy_key = (symbol, degree, sum(a.GetFormalCharge() for a in mol.GetAtoms()))
+    if ligands == {"O"} and oxy_key in oxyanions:
+        if all((mol.GetBondBetweenAtoms(center.GetIdx(), a.GetIdx()).GetBondTypeAsDouble(), a.GetFormalCharge()) in {(1., -1), (2., 0)} for a in ends):
+            if VALENCE_ELECTRONS[symbol] - center.GetFormalCharge() - sum(orders) == 2*oxyanions[oxy_key]:
+                # C/N cannot exceed an octet even when a relaxed path exists for Cl.
+                if symbol not in {"C", "N"} or sum(orders) <= 4:
+                    pairs = oxyanions[oxy_key]
+    if pairs is None:
+        return None
+    model, shape, geometry, directions, lone = _VSEPR_SHAPES[(degree, pairs)]
+    return {"center": center.GetIdx(), "ends": [a.GetIdx() for a in ends], "model": model,
+            "shape": shape, "electronGeometry": geometry, "directions": directions,
+            "loneDirections": lone, "type": "idealized-vsepr"}
+
+
+def _reference_spec(mol):
+    """Verified gas-phase references for species poorly served by organic force fields."""
+    if mol.GetNumAtoms() not in {2, 3} or any(a.GetNumExplicitHs() for a in mol.GetAtoms()):
+        return None
+    symbols = sorted(a.GetSymbol() for a in mol.GetAtoms())
+    charges = sorted(a.GetFormalCharge() for a in mol.GetAtoms())
+    orders = sorted(b.GetBondTypeAsDouble() for b in mol.GetBonds())
+    common = {"type": "experimental-reference"}
+    if len(symbols) == 2 and mol.GetNumBonds() == 1:
+        neutral_diatomics = {
+            ("N", "N", 3.): ("N₂", 1.0977, "7727379"),
+            ("H", "H", 1.): ("H₂", .7414, "1333740"),
+            ("Cl", "H", 1.): ("HCl", 1.2746, "7647010"),
+            ("Cl", "Cl", 1.): ("Cl₂", 1.9879, "7782505"),
+        }
+        key = (*symbols, orders[0])
+        if charges == [0, 0] and key in neutral_diatomics:
+            name, length, cas = neutral_diatomics[key]
+            return {**common, "name": name, "length": length, "cas": cas}
+        if symbols == ["O", "O"] and charges == [0, 0] and orders == [2.]:
+            return {**common, "name": "O₂", "length": 1.2075, "cas": "7782447", "multiplicity": 3, "unpaired": 2}
+        if symbols == ["N", "O"] and charges == [0, 0] and orders == [2.]:
+            return {**common, "name": "NO", "length": 1.1508, "cas": "10102439", "multiplicity": 2, "unpaired": 1}
+        if symbols == ["C", "O"] and orders == [3.] and all(a.GetFormalCharge() == (-1 if a.GetSymbol() == "C" else 1) for a in mol.GetAtoms()):
+            return {**common, "name": "CO", "length": 1.1282, "cas": "630080"}
+        if symbols == ["C", "N"] and orders == [3.] and all(a.GetFormalCharge() == (-1 if a.GetSymbol() == "C" else 0) for a in mol.GetAtoms()):
+            return {**common, "name": "CN⁻", "length": 1.177, "referenceUrl": "https://doi.org/10.1063/1.464244",
+                    "measurement": "氣相光電子光譜推估 C–N 為 1.177 ± 0.004 Å。"}
+    if len(symbols) == 3 and mol.GetNumBonds() == 2:
+        center = next((a for a in mol.GetAtoms() if a.GetDegree() == 2), None)
+        if center is None or any(a.GetSymbol() != "O" for a in center.GetNeighbors()):
+            return None
+        if center.GetSymbol() == "N" and orders == [1., 2.] and center.GetFormalCharge() == 1 and charges == [-1, 0, 1]:
+            return {**common, "name": "NO₂", "center": center.GetIdx(), "length": 1.193, "angle": 134.1, "cas": "10102440", "multiplicity": 2, "unpaired": 1}
+        if center.GetSymbol() == "N" and orders == [1., 2.] and center.GetFormalCharge() == 0 and charges == [-1, 0, 0]:
+            return {**common, "name": "NO₂⁻", "center": center.GetIdx(), "length": 1.25, "angle": 117.5,
+                    "referenceUrl": "https://doi.org/10.1021/j100330a017",
+                    "measurement": "氣相光電子光譜推估 N–O 為 1.25 ± 0.02 Å，O–N–O 為 117.5 ± 2°。"}
+        if center.GetSymbol() == "S" and ((orders == [2., 2.] and charges == [0,0,0]) or (orders == [1.,2.] and charges == [-1,0,1] and center.GetFormalCharge() == 1)):
+            return {**common, "name": "SO₂", "center": center.GetIdx(), "length": 1.432, "angle": 119.5, "cas": "7446095"}
+    return None
+
+
+def _is_isolated_ion(mol):
+    return (mol.GetNumAtoms() == 1 and mol.GetNumBonds() == 0
+            and (a := mol.GetAtomWithIdx(0)).GetSymbol() in ION_CHARGES
+            and a.GetFormalCharge() == ION_CHARGES[a.GetSymbol()]
+            and a.GetNumExplicitHs() == 0)
+
+
+def _sanitize(mol):
+    spec = _teaching_spec(mol)
+    if spec and mol.GetAtomWithIdx(spec["center"]).GetSymbol() in {"Cl", "Br"}:
+        # Only the enumerated complete star is exempt from RDKit's organic
+        # valence table (which rejects neutral ClF3). No broad valence bypass.
+        for atom in mol.GetAtoms():
+            atom.SetNoImplicit(True)
+        mol.UpdatePropertyCache(strict=False)
+        Chem.SanitizeMol(mol, sanitizeOps=Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+    else:
+        Chem.SanitizeMol(mol)
+
+
+def _without_hydrogens(mol):
+    result = Chem.RemoveHs(mol, sanitize=False)
+    _sanitize(result)
+    return result
+
+
+def _educational_model(mol, preserve=False):
+    spec = _teaching_spec(mol) or _reference_spec(mol)
+    ion = _is_isolated_ion(mol)
+    if spec is None and not ion:
+        raise ChemistryError("沒有適用的教學幾何模型。")
+    if not preserve:
+        coords = np.zeros((mol.GetNumAtoms(), 3))
+        if spec and spec["type"] == "idealized-vsepr":
+            c = spec["center"]
+            table = Chem.GetPeriodicTable()
+            for i, direction in zip(spec["ends"], spec["directions"]):
+                # Radius sums establish a display scale only; in particular
+                # do not claim equivalent axial/equatorial experimental lengths.
+                distance = table.GetRcovalent(mol.GetAtomWithIdx(c).GetAtomicNum()) + table.GetRcovalent(mol.GetAtomWithIdx(i).GetAtomicNum())
+                coords[i] = np.array(direction) * distance
+        elif spec:
+            if mol.GetNumAtoms() == 2:
+                coords[1, 0] = spec["length"]
+            else:
+                c = spec["center"]
+                ends = [a.GetIdx() for a in mol.GetAtomWithIdx(c).GetNeighbors()]
+                half = math.radians(spec["angle"] / 2)
+                for i, sign in zip(ends, [1, -1]):
+                    coords[i] = spec["length"] * np.array([sign*math.sin(half), math.cos(half), 0.])
+        mol.RemoveAllConformers()
+        conf = Chem.Conformer(mol.GetNumAtoms())
+        conf.Set3D(True)
+        for i, p in enumerate(coords):
+            conf.SetAtomPosition(i, Point3D(*map(float, p)))
+        mol.AddConformer(conf, assignId=True)
+    if ion:
+        method, note = "單原子離子 · Lewis 計數", "單原子離子沒有分子鍵角或構象；未模擬溶劑化、離子半徑或鹽類晶格。孤電子對方向為任意繪圖方向。"
+        metadata = {"type": "isolated-ion", "energyAvailable": False}
+    elif spec["type"] == "idealized-vsepr":
+        method = "VSEPR 理想教學幾何 · " + spec["model"]
+        note = ("角度為理想 VSEPR 幾何；鍵長只以共價半徑和設定示意尺度，不是實驗鍵長或最佳化結果。"
+                "真實孤電子對排斥會使角度偏離理想值；軸向與赤道向鍵長亦可能不同。未採用 d 軌域雜化作為超價成鍵的證據。")
+        if mol.GetAtomWithIdx(spec["center"]).GetSymbol() == "Be":
+            note += "此為氣相 BeCl₂ 單體的形狀示意；固態結構不同。"
+        if mol.GetAtomWithIdx(spec["center"]).GetSymbol() == "P" and any(a.GetSymbol() == "Cl" for a in mol.GetAtoms()):
+            note += "此為氣相 PCl₅ 分子示意；固態可形成離子結構。"
+        metadata = {key: spec[key] for key in ["type", "model", "shape", "electronGeometry"]}
+        metadata.update({"referenceUrl": VSEPR_REFERENCE_URL, "bondLengthModel": "covalent-radius-sum-display-scale", "energyAvailable": False})
+    else:
+        if "cas" in spec:
+            method = "NIST 氣相參考幾何 · " + spec["name"]
+            note = "採用 NIST CCCBDB 氣相參考幾何。"
+            url = f"https://cccbdb.nist.gov/exp2x.asp?casno={spec['cas']}&charge=0"
+        else:
+            method = "氣相光電子光譜參考幾何 · " + spec["name"]
+            note, url = spec["measurement"], spec["referenceUrl"]
+        note += "此模型使用參考座標，不提供力場能量。"
+        metadata = {"type": spec["type"], "referenceUrl": url,
+                    "referenceBondLength": spec["length"], "energyAvailable": False}
+        if "angle" in spec:
+            metadata["referenceBondAngle"] = spec["angle"]
+        if any(a.GetIsotope() for a in mol.GetAtoms()):
+            note += "保留同位素標記，幾何近似沿用通常同位素的氣相參考值。"
+    if preserve:
+        method = "保留輸入座標 · " + method
+        metadata["type"] = "imported"
+        note += "目前保留匯入座標；按套用參考／理想幾何可重建。"
+    result = _serialize(mol, [{"confId": mol.GetConformer().GetId(), "energy": None, "converged": False}], method, [note])
+    result["geometrySource"] = metadata
+    if spec and spec.get("unpaired"):
+        description = (f"{spec['name']} 的基態為{'三重態' if spec['multiplicity'] == 3 else '雙重態'}，有 {spec['unpaired']} 個未成對電子。"
+                       "Lewis 圖的鍵、形式電荷與孤電子對僅供電子計數；不代表未成對電子固定在特定原子，亦不顯示未驗證的開殼層 π 軌域。")
+        result["electronicState"] = {"multiplicity": spec["multiplicity"], "unpairedElectrons": spec["unpaired"], "description": description}
+        result["warnings"].append(description)
+    return result
 
 
 class ChemistryError(ValueError):
@@ -66,6 +271,10 @@ def _formula_metadata(mol):
         if "O" in elements and len(centers) == 1 and next(iter(centers)) in {"B", "N", "P", "S", "Si", "Cl", "Br", "I"}:
             center = next(iter(centers))
             order, conventional = (["H"] if "H" in elements else []) + [center, "O"], True
+    teaching = _teaching_spec(mol)
+    if teaching and len(elements) == 2:
+        center = mol.GetAtomWithIdx(teaching["center"]).GetSymbol()
+        order, conventional = [center, *sorted(elements - {center})], True
     parts = [{"element": symbol, "count": counts[(symbol, isotope)], "isotope": isotope}
              for symbol in order for isotope in sorted(i for s, i in counts if s == symbol)]
     text = "".join((f"[{p['isotope']}{p['element']}]" if p["isotope"] else p["element"])
@@ -151,7 +360,7 @@ def _inspect(payload):
         if molecule is None:
             return {**empty, "message": "目前還不能辨識，請檢查元素符號、括號或鍵的位置。"}
         try:
-            Chem.SanitizeMol(molecule)
+            _sanitize(molecule)
         except Chem.AtomValenceException as exc:
             match = re.search(r"atom #\s*(\d+)\s+(\w+)", str(exc))
             label = f"第 {int(match[1])+1} 個 {match[2]} 原子" if match else "原子"
@@ -165,7 +374,7 @@ def _inspect(payload):
         # not imply successful 3D embedding or experimentally accurate geometry.
         try:
             checked = _read({"smiles": smiles})
-            if not (_is_co2(checked) or _is_ozone(checked)) and not (AllChem.MMFFHasAllMoleculeParams(checked) or AllChem.UFFHasAllMoleculeParams(checked)):
+            if not (_is_co2(checked) or _is_ozone(checked) or _teaching_spec(checked) or _reference_spec(checked) or _is_isolated_ion(checked)) and not (AllChem.MMFFHasAllMoleculeParams(checked) or AllChem.UFFHasAllMoleculeParams(checked)):
                 return {**empty, "message": "這個結構缺少本機力場參數，暫時不能建立三維模型。"}
         except ChemistryError as exc:
             return {**empty, "message": str(exc)}
@@ -216,6 +425,12 @@ def _inspect(payload):
                              'font-family="sans-serif" font-size="12" fill="#627867">'
                              f'{index+1}</text>')
             svg = svg.replace("</svg>", "".join(notes) + "</svg>")
+        special = _teaching_spec(checked) or _reference_spec(checked)
+        notes = ["此為二維連接圖；三維幾何需生成後確認。"]
+        if special and special["type"] == "idealized-vsepr":
+            notes.append("三維模型使用理想 VSEPR 示意；角度與鍵長不是實驗值，亦不提供力場能量。")
+        if special and special.get("unpaired"):
+            notes.append("此物種為開殼層；Lewis 連接圖不完整表示其未成對電子或分子軌域。")
         return {"valid": True, "svg": svg,
                 "formula": rdMolDescriptors.CalcMolFormula(molecule),
                 **_formula_metadata(molecule), "charge": Chem.GetFormalCharge(molecule),
@@ -224,7 +439,7 @@ def _inspect(payload):
                 "inputAtomCount": molecule.GetNumAtoms(),
                 "canonicalSmiles": Chem.MolToSmiles(molecule, isomericSmiles=True),
                 "message": "連接結構有效",
-                "warnings": ["此為二維連接圖；三維幾何需生成後確認。"]}
+                "warnings": notes}
 
 
 def _reject_high_domain_centers(mol):
@@ -235,14 +450,16 @@ def _reject_high_domain_centers(mol):
     structure treatment is available. Tetrahedral oxyanions remain in scope.
     This also runs before sanitization so e.g. ClF3 gets an intelligible error.
     """
+    if _teaching_spec(mol):
+        return
     for atom in mol.GetAtoms():
-        if atom.GetSymbol() not in {"Si", "P", "S", "Cl", "Br", "I"} or atom.GetIsAromatic():
+        if atom.GetSymbol() not in {"Si", "P", "S", "Cl", "Br", "I", "Xe"} or atom.GetIsAromatic() or atom.GetDegree() == 0:
             continue
         hydrogens = atom.GetNumExplicitHs()
         remainder = VALENCE_ELECTRONS[atom.GetSymbol()] - atom.GetFormalCharge() - hydrogens - sum(b.GetBondTypeAsDouble() for b in atom.GetBonds())
         domains = atom.GetDegree() + hydrogens + max(0, remainder / 2)
         if domains > 4.01:
-            raise ChemistryError(f"原子 {atom.GetIdx()+1}（{atom.GetSymbol()}）需要超過四個電子域的幾何描述；此版本尚未驗證三角雙錐、蹺蹺板、T 形及八面體等超價中心，故不產生可能錯誤的形狀。請使用經驗證的量子化學工具處理。")
+            raise ChemistryError(f"原子 {atom.GetIdx()+1}（{atom.GetSymbol()}）需要超過四個電子域的幾何描述；此結構不在已支援的 VSEPR 教學模板內。可使用 PF₅、PCl₅、SF₄、SF₆、ClF₃、BrF₃、XeF₂ 或 XeF₄ 範例；其他結構仍需經驗證的模型。")
 
 
 def _is_co2(mol):
@@ -417,7 +634,7 @@ def _read_graph(graph):
             bond.SetBondDir(Chem.BondDir.values[direction])
     mol = rw.GetMol()
     _reject_high_domain_centers(mol)
-    Chem.SanitizeMol(mol)
+    _sanitize(mol)
     for data in bonds:
         stereo_atoms = data.get("stereoAtoms", [])
         stereo = int(data.get("stereo", 0))
@@ -446,7 +663,7 @@ def _read(payload):
             if mol is None:
                 raise ChemistryError("無法解析結構：請檢查 SMILES、價數、環閉合與立體化學標記。")
             _reject_high_domain_centers(mol)
-            Chem.SanitizeMol(mol)
+            _sanitize(mol)
         except ChemistryError:
             raise
         except Exception as exc:
@@ -458,21 +675,34 @@ def _read(payload):
     for atom in mol.GetAtoms():
         if atom.GetSymbol() not in SUPPORTED:
             raise ChemistryError(f"尚未支援 {atom.GetSymbol()} 的可靠幾何模型；此版本不推測金屬配位形狀。")
-        if atom.GetNumRadicalElectrons():
-            raise ChemistryError("此版本不支援自由基的幾何與孤電子對推估；請檢查價數及形式電荷。")
+        if atom.GetSymbol() in {"Na", "K", "Mg", "Ca", "Al"} and not _is_isolated_ion(mol):
+            raise ChemistryError("此金屬僅支援常見單原子離子；鹽類晶格、金屬鍵及配位結構不能當作孤立共價分子推算。")
+        if atom.GetSymbol() in {"Be", "Xe"} and not _teaching_spec(mol):
+            raise ChemistryError("Be／Xe 目前僅支援 BeCl₂、XeF₂、XeF₄ 的理想 VSEPR 教學幾何。")
         if atom.GetIsotope() and Chem.GetPeriodicTable().GetMassForIsotope(atom.GetAtomicNum(), atom.GetIsotope()) <= 0:
             raise ChemistryError(f"原子 {atom.GetIdx()+1} 的同位素質量數沒有可用資料；請確認同位素標記。")
         if atom.GetChiralTag() not in {Chem.ChiralType.CHI_UNSPECIFIED, Chem.ChiralType.CHI_TETRAHEDRAL_CW, Chem.ChiralType.CHI_TETRAHEDRAL_CCW}:
+            # A molfile reader infers TBP/OH/SP tags from ideal coordinates
+            # even when every ligand is identical and no stereoisomer exists.
+            spec = _teaching_spec(mol)
+            if payload.get("molblock") and spec and atom.GetIdx() == spec["center"] and len({(n.GetSymbol(), n.GetIsotope()) for n in atom.GetNeighbors()}) == 1:
+                atom.SetChiralTag(Chem.ChiralType.CHI_UNSPECIFIED)
+                continue
             raise ChemistryError("此版本僅支援四面體原子立體化學；無法可靠保留其他原子立體標記。")
     if any(b.GetBondType() not in BOND_TYPES.values() for b in mol.GetBonds()):
         raise ChemistryError("此版本僅支援單鍵、雙鍵、三鍵與芳香鍵；配位鍵或未指定鍵級尚未有可靠的幾何及電子計數模型。")
     if any(group.GetGroupType() != Chem.StereoGroupType.STEREO_ABSOLUTE for group in mol.GetStereoGroups()):
         raise ChemistryError("此檔案含相對或混合立體化學（AND／OR 群組）；單一構型工作室無法完整表示，請先明確指定要檢視的異構物。")
     mol = Chem.AddHs(mol, addCoords=bool(mol.GetNumConformers()))
+    radical_count = sum(a.GetNumRadicalElectrons() for a in mol.GetAtoms())
+    if radical_count:
+        reference = _reference_spec(mol)
+        if not reference or reference.get("name") not in {"NO", "NO₂"} or radical_count != 1:
+            raise ChemistryError("目前自由基幾何僅支援 NO 與 NO₂ 的參考結構；請核對未成對電子、氫數與形式電荷。")
     # O=O is a common valid connectivity notation, but its Lewis graph alone
     # gives zero radicals. The ground state of neutral dioxygen is triplet.
     # Check after adding H so that peroxide (OO) is not mistaken for O2.
-    if mol.GetNumAtoms() == 2 and all(a.GetAtomicNum() == 8 for a in mol.GetAtoms()) and Chem.GetFormalCharge(mol) == 0:
+    if mol.GetNumAtoms() == 2 and all(a.GetAtomicNum() == 8 for a in mol.GetAtoms()) and Chem.GetFormalCharge(mol) == 0 and not _reference_spec(mol):
         raise ChemistryError("中性 O₂ 的基態為三重態，具有兩個未成對電子；目前的閉殼層模型無法呈現此電子組態。")
     _reject_high_domain_centers(mol)
     if mol.GetNumAtoms() > 200:
@@ -737,6 +967,28 @@ def _lone_pairs(mol, atom, kekule, positions):
     if count == 0:
         return []
     count = min(count, 4)
+    spec = _teaching_spec(mol)
+    if spec and i == spec["center"] and spec["loneDirections"]:
+        # Fit the ideal electron-domain frame to the current bond directions.
+        # This supplies all three equatorial pairs of XeF2, and two of ClF3,
+        # which cannot be recovered by the generic <=4-domain heuristics.
+        original = np.array(spec["directions"])
+        actual = np.array([_unit(positions[j]-positions[i]) for j in spec["ends"]])
+        # The equivalent ligands in an external molfile may be numbered in
+        # any order. In particular SF4 has both axial and equatorial sites.
+        best_error, transform = float("inf"), np.eye(3)
+        for permutation in itertools.permutations(range(len(actual))):
+            ordered = actual[list(permutation)]
+            u, _, vt = np.linalg.svd(original.T @ ordered)
+            candidate = u @ vt
+            error = np.linalg.norm(original @ candidate - ordered)
+            if error < best_error:
+                best_error, transform = error, candidate
+            if error < 1e-7:
+                break
+        return [{"direction": [round(float(x), 6) for x in np.array(v) @ transform],
+                 "kind": "localized", "note": "理想 VSEPR 電子域示意；非真實軌域或電子密度。"}
+                for v in spec["loneDirections"]]
     neighbors = [_unit(positions[n.GetIdx()] - positions[i]) for n in atom.GetNeighbors()]
     normal = _plane_normal(mol, atom, positions)
     hyb = str(atom.GetHybridization())
@@ -805,7 +1057,8 @@ def _lewis_state(mol):
             raise ValueError("Nonintegral Lewis electron count")
         charges.append(charge)
         pairs.append(int(round(remainder / 2)))
-    return {"atomCharges": charges, "bondOrders": orders, "lonePairCounts": pairs}
+    return {"atomCharges": charges, "bondOrders": orders, "lonePairCounts": pairs,
+            "radicalCounts": [a.GetNumRadicalElectrons() for a in copy.GetAtoms()]}
 
 
 def _resonance_metadata(mol, atoms):
@@ -821,6 +1074,47 @@ def _resonance_metadata(mol, atoms):
     result = {"basis": "Lewis", "inputFormStateIndex": 0, "states": states,
               "groups": [], "equivalentBondGroups": [], "truncated": False,
               "note": "Lewis 共振貢獻式與 π 電子計數示意；不是實算電子密度或共振式權重。"}
+    reference = _reference_spec(mol)
+    template = _teaching_spec(mol)
+    center_index = None
+    if reference and reference["name"] in {"NO₂", "SO₂"}:
+        center_index = reference["center"]
+    elif template:
+        center = mol.GetAtomWithIdx(template["center"])
+        if center.GetSymbol() in {"S", "P"} and all(a.GetSymbol() == "O" for a in center.GetNeighbors()):
+            center_index = center.GetIdx()
+    if center_index is not None:
+        # RDKit need not treat P/S oxoanions as conjugated. Equivalent terminal
+        # oxygens nevertheless admit permutations of the input Lewis assignment.
+        # No orbital occupation or resonance weights are inferred from symmetry.
+        center = mol.GetAtomWithIdx(center_index)
+        edges = [(a.GetIdx(), mol.GetBondBetweenAtoms(center_index, a.GetIdx()).GetIdx())
+                 for a in center.GetNeighbors()]
+        assignments = [(source["bondOrders"][b], source["atomCharges"][a], source["lonePairCounts"][a])
+                       for a, b in edges]
+        for perm in sorted(set(itertools.permutations(assignments))):
+            if list(perm) == assignments:
+                continue
+            state = {key: list(values) for key, values in source.items()}
+            for (atom_id, bond_id), (order, charge, pairs) in zip(edges, perm):
+                state["bondOrders"][bond_id] = order
+                state["atomCharges"][atom_id] = charge
+                state["lonePairCounts"][atom_id] = pairs
+            states.append(state)
+        isotopes = {mol.GetAtomWithIdx(a).GetIsotope() for a, _ in edges}
+        for isotope in sorted(isotopes):
+            equiv = [(a, b) for a, b in edges if mol.GetAtomWithIdx(a).GetIsotope() == isotope]
+            if len(equiv) > 1:
+                result["equivalentBondGroups"].append({
+                    "bondIds": sorted(b for _, b in equiv), "atomIds": sorted([center_index]+[a for a, _ in equiv]),
+                    "order": sum(order for order, _, _ in assignments)/len(assignments),
+                    "basis": "equivalent-terminal-oxygens",
+                })
+        result["note"] = "等價末端氧可交換所畫的 Lewis 單／雙鍵與形式電荷。所示貢獻式保留輸入的中心原子電荷，平均鍵級僅供繪圖。"
+        return result
+    if reference and reference.get("unpaired"):
+        result["note"] = "開殼層物種：保留一個 Lewis 電子計數式，不推測開殼層 π 電子雲或共振權重；基態自旋另見電子組態。"
+        return result
     if not any(b.GetIsConjugated() for b in mol.GetBonds()):
         return result
     limit = 32
@@ -919,7 +1213,7 @@ def _graph(mol):
     marked = Chem.Mol(mol)
     for atom in marked.GetAtoms():
         atom.SetIntProp("_SourceId", atom.GetIdx())
-    editable = Chem.RemoveHs(marked)
+    editable = _without_hydrogens(marked)
     source_id = {a.GetIdx(): a.GetIntProp("_SourceId") for a in editable.GetAtoms()}
     atoms = [{"id": source_id[a.GetIdx()], "element": a.GetSymbol(), "charge": a.GetFormalCharge(),
               "aromatic": a.GetIsAromatic(), "chiralTag": int(a.GetChiralTag()),
@@ -1014,11 +1308,15 @@ def _serialize(mol, records, method, warnings=None):
     kekule = Chem.Mol(mol)
     Chem.Kekulize(kekule, clearAromaticFlags=False)
     atom_cip = _true_cip(mol)[0]
+    teaching = _teaching_spec(mol)
+    high_domain_center = None
+    if teaching and len(teaching["directions"]) + len(teaching["loneDirections"]) > 4:
+        high_domain_center = teaching["center"]
     atoms = []
     for a in mol.GetAtoms():
         atoms.append({"id": a.GetIdx(), "element": a.GetSymbol(), "charge": a.GetFormalCharge(),
                       "position": [round(float(v), 6) for v in positions[a.GetIdx()]],
-                      "hybridization": str(a.GetHybridization()), "degree": a.GetDegree(),
+                      "hybridization": "not-assigned" if a.GetIdx() == high_domain_center else str(a.GetHybridization()), "degree": a.GetDegree(),
                       "lonePairs": _lone_pairs(mol, a, kekule, positions),
                       "cip": atom_cip.get(a.GetIdx()),
                       "radicals": a.GetNumRadicalElectrons(), "isotope": a.GetIsotope()})
@@ -1040,7 +1338,8 @@ def _serialize(mol, records, method, warnings=None):
                    "molblock": Chem.MolToMolBlock(mol, confId=r["confId"]),
                    "xyz": Chem.MolToXYZBlock(mol, confId=r["confId"]),
                    "converged": bool(r["converged"])} for i, r in enumerate(records)]
-    base_notice = "孤電子對葉瓣僅示意 Lewis 電子計數與局部方向，並非電子密度；參考幾何亦不代表溶液或所有溫度條件下的結構。" if (_is_co2(mol) or _is_ozone(mol)) else BASE_WARNING
+    special_geometry = _is_co2(mol) or _is_ozone(mol) or _teaching_spec(mol) or _reference_spec(mol) or _is_isolated_ion(mol)
+    base_notice = "孤電子對葉瓣僅示意 Lewis 電子計數與局部方向，並非電子密度；參考／理想幾何亦不代表溶液或所有溫度條件下的結構。" if special_geometry else BASE_WARNING
     notice = [base_notice] + (warnings or []) + _stereo_warnings(mol)
     if mol.HasProp("_StereoFromImport"):
         notice.append("此 MOL 未附原始立體指定中繼資料；立體標記可能由檔案三維座標推導，請核對是否符合原先意圖。")
@@ -1050,11 +1349,11 @@ def _serialize(mol, records, method, warnings=None):
             notice.append("含硼結構的 UFF 鍵長可能有明顯系統誤差；形狀可供定性檢視，鍵長與能量不宜作定量依據。")
     if any(a.GetFormalCharge() != 0 for a in mol.GetAtoms()) and any(b.GetIsConjugated() for b in mol.GetBonds()):
         notice.append("形式電荷與孤電子對數依一個 Lewis 共振式標記；離域系統的等價原子不代表具有不同的固定電荷或局域電子密度。")
-    if not records[0]["converged"] and "未最佳化" not in method and "保留" not in method:
+    if not special_geometry and not records[0]["converged"] and "未最佳化" not in method and "保留" not in method:
         notice.append("最低能量候選在迭代上限內未完全收斂；請再次最佳化並檢查幾何。")
     if any(a.GetAtomicNum() in {15,16,17,35,53} and a.GetTotalValence() > 4 for a in mol.GetAtoms()):
         notice.append("含超價主族中心：力場可能無法充分描述電子結構，孤電子對方向僅作示意；精確構型需量子化學或實驗資料確認。")
-    smiles = Chem.MolToSmiles(Chem.RemoveHs(mol), isomericSmiles=True)
+    smiles = Chem.MolToSmiles(_without_hydrogens(mol), isomericSmiles=True)
     return {"smiles": smiles, "formula": rdMolDescriptors.CalcMolFormula(mol), **_formula_metadata(mol),
             "mass": round(Descriptors.MolWt(mol), 4), "charge": Chem.GetFormalCharge(mol),
             "atoms": atoms, "bonds": bonds, "conformers": conformers, "activeConformer": 0,
@@ -1077,6 +1376,8 @@ def _generate_molecule(mol, payload, verify_stereo=None):
         return _co2_model(mol)
     if _is_ozone(mol):
         return _ozone_model(mol)
+    if _teaching_spec(mol) or _reference_spec(mol) or _is_isolated_ion(mol):
+        return _educational_model(mol)
     if verify_stereo is None:
         verify_stereo = _true_cip(mol)
     samples = min(32, max(1, int(payload.get("samples", 8))))
@@ -1120,6 +1421,10 @@ def _existing(payload, action):
         return _co2_model(mol, preserve=action == "analyze")
     if _is_ozone(mol) and action in {"analyze", "optimize"}:
         return _ozone_model(mol, preserve=action == "analyze")
+    if _teaching_spec(mol) or _reference_spec(mol) or _is_isolated_ion(mol):
+        if action == "rotate":
+            raise ChemistryError("此參考／理想幾何沒有可旋轉的內部單鍵構象；可旋轉整個三維視角。")
+        return _educational_model(mol, preserve=action == "analyze")
     warnings = []
     if action == "rotate":
         try:

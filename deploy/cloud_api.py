@@ -17,7 +17,7 @@ from deploy.json_transport import load_request
 ROOT = Path(__file__).resolve().parents[1]
 MAX_BODY = 2 * 1024 * 1024
 MAX_RESPONSE = 16 * 1024 * 1024
-VERSION = "1.2.2"
+VERSION = "1.3.0"
 
 
 async def compute(payload: dict, timeout: float):

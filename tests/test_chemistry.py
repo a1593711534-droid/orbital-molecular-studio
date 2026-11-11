@@ -214,13 +214,14 @@ class ChemistryTests(unittest.TestCase):
         self.assertAlmostEqual(angle(m, 0, 1, 3), 180, delta=.05)
         self.assertAlmostEqual(m["bonds"][0]["length"], 1.20, delta=.02)
 
-    def test_bf3_planar_with_explicit_uff_distance_limitation(self):
+    def test_bf3_planar_with_explicit_idealized_distance_limitation(self):
         m = model("FB(F)F")
         for a, b in [(0, 2), (0, 3), (2, 3)]:
             self.assertAlmostEqual(angle(m, a, 1, b), 120, delta=.05)
         self.assertEqual(len(m["atoms"][1]["lonePairs"]), 0)
-        self.assertIn("UFF", m["method"])
-        self.assertTrue(any("含硼" in w and "誤差" in w for w in m["warnings"]))
+        self.assertEqual(m["geometrySource"]["type"], "idealized-vsepr")
+        self.assertIsNone(m["energy"])
+        self.assertTrue(any("共價半徑" in w for w in m["warnings"]))
 
     def test_ammonium_tetrahedral_without_lone_pairs(self):
         m = model("[NH4+]")
@@ -228,8 +229,8 @@ class ChemistryTests(unittest.TestCase):
         self.assertEqual(len(m["atoms"][0]["lonePairs"]), 0)
         self.assertAlmostEqual(angle(m, 1, 0, 2), 109.47, delta=.05)
 
-    def test_unvalidated_high_electron_domain_centers_rejected(self):
-        for smiles in ["FS(F)(F)F", "FS(F)(F)(F)(F)F", "FP(F)(F)(F)F", "FCl(F)F", "F[I-](F)(F)F"]:
+    def test_untemplated_high_electron_domain_centers_rejected(self):
+        for smiles in ["F[I-](F)(F)F", "ClP(F)(F)(F)F", "FS(F)(F)Cl"]:
             with self.subTest(smiles=smiles), self.assertRaisesRegex(ChemistryError, "超過四個電子域"):
                 model(smiles)
 

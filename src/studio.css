@@ -251,3 +251,4 @@ summary::-webkit-details-marker{display:none}
 /* Keep the electronic legend above the selection prompt at enlarged text sizes. */
 .mode-select .electron-legend{bottom:78px}
 @media(pointer:coarse) and (min-width:901px){.scene-gesture{display:block}.stage-bottom{justify-content:space-between}}
+.extra-elements{max-height:min(420px,55dvh);overflow-y:auto}

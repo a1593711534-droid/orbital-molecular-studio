@@ -3,12 +3,10 @@ import {ArrowRight, Check, ChevronDown, CornerDownRight, CornerUpRight, GitBranc
 import './structure-input.css';
 import Formula from './Formula.jsx';
 import {chemistryRequest} from './chemistryClient.js';
+import {CHEMISTRY_EXAMPLES, ELEMENTS as ALL_ELEMENTS, elementInput, exampleMatches} from './chemistryExamples.js';
 
-const ELEMENTS = [
-  ['C','碳','#394b60'], ['N','氮','#2357b5'], ['O','氧','#b93236'], ['F','氟','#23774f'],
-  ['Cl','氯','#246a3f'], ['H','氫','#4d6173'], ['S','硫','#816000'], ['P','磷','#9c4c16'],
-  ['Br','溴','#934337'], ['I','碘','#65449b'], ['B','硼','#8b4e37'],
-];
+const primarySymbols = ['C','N','O','F','Cl'];
+const ELEMENTS = [...primarySymbols.map(symbol=>ALL_ELEMENTS.find(([s])=>s===symbol)), ...ALL_ELEMENTS.filter(([s])=>!primarySymbols.includes(s))];
 const NAMES = {...Object.fromEntries(ELEMENTS.map(([symbol,name])=>[symbol,name])),Si:'矽'};
 const SYMBOLS = {
   '-':['bond','單鍵'], '=':['bond','雙鍵'], '#':['bond','三鍵'], ':':['bond','芳香鍵'],
@@ -20,7 +18,9 @@ const SYMBOLS = {
 
 function tokenize(value) {
   const tokens=[];
-  const pattern=/\[[^\]]*\]?|Cl|Br|Si|[A-Z][a-z]?|[bcnops]|%\d{0,2}|\d|@@|[^\s]/g;
+  // Only Cl and Br are two-letter elements in unbracketed SMILES. Greedy
+  // capital/lowercase matching would merge the methyl and ring C in Cc1ccccc1.
+  const pattern=/\[[^\]]*\]?|Cl|Br|[BCNOPSFIbcnops]|%\d{0,2}|\d|@@|[^\s]/g;
   let match, atomIndex=0;
   while((match=pattern.exec(value))) {
     const raw=match[0], start=match.index, end=start+raw.length;
@@ -34,7 +34,7 @@ function tokenize(value) {
         if(/[+-]/.test(raw))label+=' · 帶電原子';
         if(raw.includes('@'))label+=' · 已指定立體方向';
       } else label='括號內指定元素、電荷或立體方向';
-    } else if(/^[A-Z][a-z]?$|^[bcnops]$/.test(raw)) {
+    } else if(/^(Cl|Br|[BCNOPSFIbcnops])$/.test(raw)) {
       symbol=raw[0].toUpperCase()+raw.slice(1); atom=atomIndex++; kind='atom';
       label=(NAMES[symbol]||symbol)+' '+(atom+1)+(/^[bcnops]$/.test(raw)?' · 芳香原子':'');
     } else if(/^\d$|^%\d{1,2}$/.test(raw)) {
@@ -67,6 +67,9 @@ export default function StructureInput({initialValue='',busy=false,hosted=false,
   const [preview,setPreview]=useState(null),[previewState,setPreviewState]=useState(initialValue?'checking':'empty');
   const [moreElements,setMoreElements]=useState(false),[composing,setComposing]=useState(false),[submitting,setSubmitting]=useState(false);
   const [submitError,setSubmitError]=useState(''),[retry,setRetry]=useState(0),[historyVersion,setHistoryVersion]=useState(0);
+  const [exampleSearch,setExampleSearch]=useState('');
+  const matchingExamples=useMemo(()=>CHEMISTRY_EXAMPLES.filter(example=>exampleMatches(example,exampleSearch)),[exampleSearch]);
+  const example=matchingExamples.find(item=>item.smiles===value);
   const textarea=useRef(null),valueRef=useRef(value),selectionRef=useRef(selection),requestId=useRef(0),previewHost=useRef(null);
   const history=useRef({past:[],future:[]});
   const tokens=useMemo(()=>tokenize(value),[value]);
@@ -191,7 +194,7 @@ export default function StructureInput({initialValue='',busy=false,hosted=false,
     if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='y'){event.preventDefault();travelHistory('redo');}
   }
   const description=branchEnd>=0&&selection[0]===selection[1]&&value[selection[0]]===')'?'在支鏈加入原子，完成後點「回主鏈」':focusedToken?
-    focusedToken.kind==='atom'?focusedToken.label+(focusedToken.raw.startsWith('[')?'':' · 相鄰原子自動接成單鍵'):
+    focusedToken.kind==='atom'?focusedToken.label:
     focusedToken.kind==='ring'?focusedToken.label+' · 相同編號相連':focusedToken.label:
     '點選元素開始，或貼上已有的 SMILES';
 
@@ -199,8 +202,16 @@ export default function StructureInput({initialValue='',busy=false,hosted=false,
     <header className="si-header"><div><h2 id="si-title">輸入結構</h2><span>點選符號，立即看見連接方式</span></div><button type="button" className="si-icon-button" onClick={onClose} aria-label="關閉結構輸入" title="關閉"><X size={22}/></button></header>
     <div className="si-workspace">
       <form className="si-editor" onSubmit={generate}>
+        <label className="si-example-label" htmlFor="si-example">高中常見結構</label>
+        <input className="si-example-search" aria-label="搜尋常見結構" type="search" placeholder="搜尋名稱或化學式，例如 NH4+、硝酸根" value={exampleSearch} onKeyDown={event=>{if(event.key==='Enter')event.preventDefault();}} onChange={event=>setExampleSearch(event.target.value)} disabled={inputBusy}/>
+        <select id="si-example" aria-label="選擇高中常見結構" value={example?.smiles||''} disabled={inputBusy} onChange={event=>{const smiles=event.target.value;if(smiles)update(smiles,{cursor:[smiles.length,smiles.length]});}}>
+          <option value="">選擇範例以帶入結構…</option>
+          {[...new Set(matchingExamples.map(item=>item.group))].map(group=><optgroup key={group} label={group}>{matchingExamples.filter(item=>item.group===group).map(item=><option key={item.smiles} value={item.smiles}>{item.name} · {item.formula}</option>)}</optgroup>)}
+        </select>
+        {!matchingExamples.length&&<p className="si-example-note" role="status">沒有符合的範例。可在下方輸入 SMILES。</p>}
+        <p className="si-example-note">{example?.note||'選擇範例會取代輸入框，可用復原返回。相同分子式可能對應多種結構。'}</p>
         <div className="si-section-label"><strong>原子</strong><button type="button" className="si-text-button" aria-expanded={moreElements} onClick={()=>setMoreElements(v=>!v)}>更多元素<ChevronDown size={15} className={moreElements?'si-flipped':''}/></button></div>
-        <div className="si-elements">{ELEMENTS.slice(0,moreElements?ELEMENTS.length:5).map(([symbol,name,color])=><button type="button" key={symbol} aria-label={`插入${name}元素`} title={`${name} · ${symbol}`} disabled={inputBusy} onMouseDown={e=>e.preventDefault()} onClick={()=>insert(symbol==='H'?'[H]':symbol)}><strong style={{color}}>{symbol}</strong><span>{name}</span></button>)}</div>
+        <div className="si-elements">{ELEMENTS.slice(0,moreElements?ELEMENTS.length:5).map(([symbol,name,color])=><button type="button" key={symbol} aria-label={`插入${name}元素`} title={`${name} · ${elementInput(symbol)}`} disabled={inputBusy} onMouseDown={e=>e.preventDefault()} onClick={()=>insert(elementInput(symbol))}><strong style={{color}}>{symbol}</strong><span>{name}</span></button>)}</div>
         <div className="si-connections" aria-label="連接工具">
           <div className="si-bonds">{[['-','—','單鍵'],['=','=','雙鍵'],['#','≡','三鍵']].map(([code,icon,name])=><button type="button" key={code} aria-label={`插入${name}`} title={name} disabled={inputBusy} onMouseDown={e=>e.preventDefault()} onClick={()=>insert(code)}><b>{icon}</b><span>{name}</span></button>)}</div>
           <div className="si-branches"><button type="button" aria-label="新增支鏈" title="在目前位置新增支鏈" disabled={inputBusy} onMouseDown={e=>e.preventDefault()} onClick={branch}><GitBranch size={17}/><span>支鏈</span></button><button type="button" aria-label="回到主鏈" title="跳到支鏈括號外，繼續接主鏈" disabled={inputBusy||branchEnd<0} onMouseDown={e=>e.preventDefault()} onClick={()=>moveCursor(branchEnd)}><CornerUpRight size={17}/><span>回主鏈</span></button><button type="button" aria-label={openRings.length?'閉合環 '+openRings[0].replace('%',''):'標記環起點'} title={openRings.length?'在目前原子與環起點之間建立連接':'在目前原子標記環起點'} disabled={inputBusy||!nextRing} onMouseDown={e=>e.preventDefault()} onClick={()=>insert(nextRing)}><Hexagon size={17}/><span>{openRings.length?'閉環 '+openRings[0].replace('%',''):'環起點'}</span></button></div>
@@ -219,7 +230,7 @@ export default function StructureInput({initialValue='',busy=false,hosted=false,
         <div className={'si-preview-status '+previewState} role="status" aria-live="polite">
           {previewState==='checking'?<><LoaderCircle className="si-spin" size={18}/><span>即時驗證中</span></>:previewState==='valid'?<><Check size={18}/><span><b><Formula value={preview?.displayFormula||preview?.formula} parts={preview?.formulaParts} charge={preview?.charge}/></b><small>{preview?.atomCountIncludesHydrogen?'含氫共 ':''}{preview?.atomCount} 原子 · {preview?.bondCount} 化學鍵</small></span></>:previewState==='empty'?<><ArrowRight size={18}/><span>加入原子後，預覽會自動更新</span></>:<><span className="si-status-dot"/><span>{preview?.message||'請檢查輸入的連接方式。'}</span>{previewState==='error'&&<button type="button" className="si-icon-button" aria-label="重試結構預覽" title="重試預覽" onClick={()=>setRetry(n=>n+1)}><RotateCcw size={18}/></button>}</>}
         </div>
-        {previewState==='valid'&&<p className="si-preview-note">數字對應輸入中的原子。生成後可在 3D 畫面繼續編輯。</p>}
+        {previewState==='valid'&&<><p className="si-preview-note">數字對應輸入中的原子。生成後可在 3D 畫面繼續編輯。</p>{preview?.warnings?.map((warning,index)=><p className="si-preview-note" key={index}>{warning}</p>)}</>}
       </aside>
     </div>
     <footer className="si-footer"><span className={submitError?'si-submit-error':''} role={submitError?'alert':undefined}>{submitError||'輸入時不會變更目前模型'}</span><button type="button" className="si-generate" onClick={generate} disabled={!canGenerate}>{inputBusy?<LoaderCircle size={18} className="si-spin"/>:<Sparkles size={18}/>}生成三維結構<ArrowRight size={18}/></button></footer>

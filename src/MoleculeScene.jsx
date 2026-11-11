@@ -18,6 +18,13 @@ const ELEMENTS = {
   Cl: { color: '#58b582', radius: .46, vdw: 1.75 },
   Br: { color: '#a65a42', radius: .49, vdw: 1.85 },
   I: { color: '#9364bd', radius: .53, vdw: 1.98 },
+  Be: { color: '#89b257', radius: .43, vdw: 1.53 },
+  Xe: { color: '#65a5b3', radius: .55, vdw: 2.16 },
+  Na: { color: '#9c82c8', radius: .48, vdw: 2.27 },
+  K: { color: '#a880ce', radius: .54, vdw: 2.75 },
+  Mg: { color: '#91b55b', radius: .47, vdw: 1.73 },
+  Ca: { color: '#8ab169', radius: .52, vdw: 2.31 },
+  Al: { color: '#b5bcc7', radius: .48, vdw: 1.84 },
 };
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const V = (p) => new THREE.Vector3(...p);
@@ -446,7 +453,7 @@ const MoleculeScene = forwardRef(function MoleculeScene({
     r.resources.push(lpMaterial, dotMaterial);
     let displayedPairs = 0;
     const orbitalAxes = showPi || showLonePairs ? alignedPiOrbitals(model.bonds, positions, neighbors, model.atoms) : [];
-    if (showLonePairs) for (const atom of model.atoms) {
+    if (showLonePairs && !model.electronicState?.unpairedElectrons) for (const atom of model.atoms) {
       if (!visible(atom.id)) continue;
       for (const pair of displayedLonePairs(atom, presentation.pairCounts.get(atom.id), electronicView, positions, neighbors, orbitalAxes)) {
         const rawDirection = Array.isArray(pair) ? pair : pair.direction;
@@ -480,7 +487,9 @@ const MoleculeScene = forwardRef(function MoleculeScene({
         }
       }
     }
-    const piOrbitals = showPi ? orbitalAxes.filter(({atomId}) => visible(atomId)) : [];
+    // A localized closed-shell p picture cannot represent the spin occupancy
+    // of O2 or the supported odd-electron reference molecules.
+    const piOrbitals = showPi && !model.electronicState?.unpairedElectrons ? orbitalAxes.filter(({atomId}) => visible(atomId)) : [];
     const piSystems = (model.resonance?.groups || []).filter(group => Number.isFinite(group.piElectrons));
     const systemDescription = piSystems.map((group, index) => `π 系統 ${index + 1} 共 ${group.piElectrons} 個電子`).join('；');
     r.renderer.domElement.setAttribute('data-electronic-view', electronicView);
@@ -527,10 +536,10 @@ const MoleculeScene = forwardRef(function MoleculeScene({
   return <div className="molecule-scene" ref={hostRef}>
     <span className="scene-hover-hint" ref={hoverRef} aria-hidden="true"/>
     {model&&(showLonePairs||showPi)&&<div className="electron-legend" aria-label="電子對圖例">
-      {showLonePairs&&<span><i className="electron-dots"/>{electronicView==='lewis'?'Lewis 計數 · 每組 1 對':'局域電子對'}</span>}
+      {model.electronicState?.unpairedElectrons ? <span>{model.electronicState.multiplicity===3?'三重態':'雙重態'} · {model.electronicState.unpairedElectrons} 個未成對電子</span> : showLonePairs&&<span><i className="electron-dots"/>{electronicView==='lewis'?'Lewis 計數 · 每組 1 對':'局域電子對'}</span>}
       {electronicView!=='lewis'&&!!model.resonance?.groups?.length&&<span className="pi-system-count"><svg viewBox="0 0 28 20" aria-hidden="true"><path d="M2 10h24"/><ellipse cx="6" cy="5" rx="3" ry="4"/><ellipse cx="14" cy="5" rx="3" ry="4"/><ellipse cx="22" cy="5" rx="3" ry="4"/><ellipse cx="6" cy="15" rx="3" ry="4"/><ellipse cx="14" cy="15" rx="3" ry="4"/><ellipse cx="22" cy="15" rx="3" ry="4"/></svg>{model.resonance.groups.length>1?model.resonance.groups.length+' 組 ':''}π 系統 · {model.resonance.groups.reduce((sum,group)=>sum+(Number.isFinite(group.piElectrons)?group.piElectrons:0),0)} e⁻</span>}
       {electronicView!=='lewis'&&!!model.resonance?.equivalentBondGroups?.length&&<span><i className="partial-bond-symbol"/>等價鍵</span>}
-      {showPi&&<span className="orbital-caption">p 軌域示意 · 雙葉為同一軌域</span>}
+      {showPi&&<span className="orbital-caption">{model.electronicState?.unpairedElectrons?'開殼層：未繪製閉殼層 p 軌域示意':'p 軌域示意 · 雙葉為同一軌域'}</span>}
     </div>}
     {error && <div className="scene-error" role="alert">{error}</div>}
     {!model?.atoms?.length && !error && <div className="scene-empty"><span className="scene-empty-symbol">＋</span><strong>從一個原子開始</strong><span>建立連接關係，估算分子的三維構形</span></div>}

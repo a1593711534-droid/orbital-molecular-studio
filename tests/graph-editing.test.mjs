@@ -18,6 +18,29 @@ test('a charge-only edit preserves the isotope', () => {
   assert.equal(graph.atoms[0].isotope,15);
 });
 
+test('changing a bond on a bracket oxygen never turns implicit hydrogens back on', () => {
+  const graph = {atoms:[{id:0,element:'O',charge:-1,explicitHs:0,noImplicit:true}],bonds:[]};
+  touchGraph(graph,[0]);
+  assert.equal(graph.atoms[0].noImplicit,true);
+  assert.equal(graph.atoms[0].explicitHs,0);
+});
+
+test('explicit hydrogen policy survives charge-only edits and only an explicit auto selection releases it', () => {
+  const graph = {atoms:[{id:3,element:'O',charge:0,explicitHs:2,noImplicit:true,isotope:18}],bonds:[]};
+  replaceAtom(graph,3,'O',1);
+  assert.equal(graph.atoms[0].explicitHs,2);
+  assert.equal(graph.atoms[0].noImplicit,true);
+  replaceAtom(graph,3,'O',1,'3');
+  assert.equal(graph.atoms[0].explicitHs,3);
+  assert.equal(graph.atoms[0].noImplicit,true);
+  replaceAtom(graph,3,'O',-1,'0');
+  assert.equal(graph.atoms[0].explicitHs,0);
+  assert.equal(graph.atoms[0].noImplicit,true);
+  replaceAtom(graph,3,'O',-1,'auto');
+  assert.equal(graph.atoms[0].noImplicit,false);
+  assert.equal(graph.atoms[0].isotope,18);
+});
+
 test('auto-added hydrogen bonds reject editing instead of crashing or reporting a no-op success', () => {
   const graph = {atoms:[{id:0,element:'C'},{id:3,element:'O'}],bonds:[{a:0,b:3,order:1}]};
   const before=structuredClone(graph);

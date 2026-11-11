@@ -28,7 +28,7 @@ class InspectTests(unittest.TestCase):
         cases = [("N->B", "配位鍵"), ("C~C", "未指定鍵級"),
                  ("[999CH4]", "同位素"), ("[65549CH4]", "同位素"),
                  ("[CH4+256]", "形式電荷"), ("[CH260]", "氫原子數"),
-                 ("O=O", "三重態"), ("[18O]=O", "三重態"), ("F[C@SP1](Cl)(Br)I", "四面體")]
+                 ("[CH3]", "自由基"), ("[Na+].[Cl-]", "相連分子"), ("F[C@SP1](Cl)(Br)I", "四面體")]
         for smiles, message in cases:
             with self.subTest(smiles=smiles):
                 result = inspect(smiles)
@@ -160,7 +160,7 @@ class InspectTests(unittest.TestCase):
                 self.assertTrue(result["message"])
 
     def test_generation_scope_limits_are_shared(self):
-        for text in ["[Fe]", "[CH3]", "CC.O", "C" * 81, "FP(F)(F)(F)F"]:
+        for text in ["[Fe]", "[CH3]", "CC.O", "C" * 81, "ClP(F)(F)(F)F"]:
             with self.subTest(text=text[:20]):
                 self.assertFalse(inspect(text)["valid"])
 

@@ -10,7 +10,9 @@ export function touchGraph(graph, ids, consume = 0) {
   const affected = new Set(ids);
   for (const atom of graph.atoms) if (affected.has(atom.id)) {
     atom.explicitHs = Math.max(0, (atom.explicitHs || 0) - consume);
-    atom.noImplicit = false;
+    // Bracket atoms such as [O-] and [C-] explicitly prohibit implicit H.
+    // Editing a bond must not silently turn an oxide into hydroxide, or a
+    // cyanide carbon into a different hydrogenated species.
     delete atom.chiralTag;
   }
   for (const bond of graph.bonds) if (affected.has(bond.a) || affected.has(bond.b)) {
@@ -20,14 +22,28 @@ export function touchGraph(graph, ids, consume = 0) {
   }
 }
 
-export function replaceAtom(graph, id, element, charge) {
+export function replaceAtom(graph, id, element, charge, hydrogenMode) {
   const atom = graph.atoms.find(a => a.id === id);
   if (!atom) throw new Error('氫原子依價態自動補足');
   // An isotope belongs to one element. Replacing 13C with N must not silently
   // request radioactive 13N; charge-only changes preserve the selected isotope.
-  if (atom.element !== element) atom.isotope = 0;
+  if (atom.element !== element) {
+    atom.isotope = 0;
+    atom.explicitHs = 0;
+    atom.noImplicit = false;
+  }
   atom.element = element;
   atom.charge = charge;
-  atom.explicitHs = 0;
+  if (hydrogenMode !== undefined) {
+    if (hydrogenMode === 'auto') {
+      atom.explicitHs = 0;
+      atom.noImplicit = false;
+    } else {
+      const count = Number(hydrogenMode);
+      if (!Number.isInteger(count) || count < 0 || count > 4) throw new Error('請指定 0–4 個氫，或選擇自動補氫。');
+      atom.explicitHs = count;
+      atom.noImplicit = true;
+    }
+  }
   touchGraph(graph, [id]);
 }

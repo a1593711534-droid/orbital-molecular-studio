@@ -10,6 +10,11 @@
 .structure-input .si-icon-button:hover:enabled { background: #edf3ef; }
 .si-workspace { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,.9fr); overflow: auto; min-height: 0; }
 .si-editor { padding: 24px 26px 22px 28px; min-width: 0; }
+.si-example-label { display:block; font-size:var(--text-small,14px); font-weight:600; margin-bottom:8px; }
+.structure-input select { width:100%; min-height:44px; border:1px solid #bacdc0; border-radius:7px; background:#fff; color:#233c2e; font:inherit; padding:8px; }
+.structure-input select:focus-visible { outline:3px solid #429e83; outline-offset:3px; }
+.si-example-note { font-size:var(--text-small,14px); line-height:1.7; color:#576c62; margin:8px 0 20px; }
+.structure-input .si-example-search { width:100%; min-height:42px; margin-bottom:8px; padding:8px 10px; border:1px solid #bacdc0; border-radius:7px; background:#fff; color:#233c2e; font:inherit; font-size:var(--text-small,14px); }
 .si-section-label { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 10px; }
 .si-section-label>strong { font-size: var(--text-small,14px); font-weight: 600; color: #4e6358; }
 .structure-input .si-text-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 36px; padding: 4px 6px; border: 0; background: transparent; font-size: var(--text-small,14px); color: #275d48; border-radius: 5px; }
