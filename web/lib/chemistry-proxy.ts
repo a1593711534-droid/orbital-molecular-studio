@@ -7,6 +7,7 @@ const TOTAL_TIMEOUT_MS=125_000;
 const WARMUP_TIMEOUT_MS=75_000;
 const HEALTH_ATTEMPT_MS=15_000;
 const HEALTH_RETRY_MS=1_500;
+const MAX_HEALTH_BACKOFF_MS=12_000;
 const COMPUTE_TIMEOUT_MS=50_000;
 const READY_TTL_MS=60_000;
 // One service readiness hint per isolate, never molecule data or user identity.
@@ -40,6 +41,13 @@ function boundedSignal(parent:AbortSignal,ms:number){
   return {signal:controller.signal,cleanup:()=>{clearTimeout(timer);parent.removeEventListener('abort',abort);}};
 }
 function isJSON(headers:Headers){return headers.get('content-type')?.split(';',1)[0].trim().toLowerCase()==='application/json';}
+function retryAfterMs(headers:Headers){
+  const value=headers.get('retry-after')?.trim();
+  if(!value)return 0;
+  if(/^\d+$/.test(value))return Math.min(Number.MAX_SAFE_INTEGER,Number(value)*1000);
+  const when=Date.parse(value);
+  return Number.isFinite(when)?Math.max(0,when-Date.now()):0;
+}
 class BodySizeError extends Error {}
 function parseObject(text:string){
   const value=JSON.parse(text);
@@ -90,9 +98,11 @@ async function waitUntilReady(endpoint:URL,token:string,signal:AbortSignal,fresh
   readyService=undefined;
   const deadline=Date.now()+WARMUP_TIMEOUT_MS;
   const healthURL=new URL('/api/health',endpoint.origin);
+  let backoff=HEALTH_RETRY_MS;
   while(Date.now()<deadline){
     if(signal.aborted)throw new DOMException('Cancelled','AbortError');
     const attempt=boundedSignal(signal,Math.min(HEALTH_ATTEMPT_MS,deadline-Date.now()));
+    let wait=backoff;
     try{
       // Waking a free instance is a read-only GET. A structural POST is never replayed.
       const response=await fetch(healthURL,{headers:{Authorization:`Bearer ${token}`},signal:attempt.signal,redirect:'manual'});
@@ -100,12 +110,21 @@ async function waitUntilReady(endpoint:URL,token:string,signal:AbortSignal,fresh
         diagnostic('warmup','configuration',response);await discard(response);
         return {ok:false,response:json('雲端服務連線設定需要更新。',503)};
       }
-      if(response.status>=400&&response.status<500){
+      // A sleeping instance can be preceded by a non-JSON 429 from Render's
+      // edge. An application JSON 429 still means the chemistry service is busy.
+      const edgeRateLimit=response.status===429&&!isJSON(response.headers);
+      if(response.status>=400&&response.status<500&&!edgeRateLimit){
         diagnostic('warmup','rejected',response);await discard(response);
         return {ok:false,response:json(response.status===429?'計算服務忙碌中，請稍後再試。':'雲端服務連線設定需要更新。',response.status===429?429:503)};
       }
-      if(response.status>=500||!isJSON(response.headers)){
+      if(edgeRateLimit||response.status>=500||!isJSON(response.headers)){
+        wait=Math.max(backoff,retryAfterMs(response.headers));
         diagnostic('warmup','not-ready',response);await discard(response);
+        if(edgeRateLimit&&wait>=deadline-Date.now()){
+          const busy=json('計算服務忙碌中，請稍後再試。',429);
+          busy.headers.set('Retry-After',String(Math.ceil(wait/1000)));
+          return {ok:false,response:busy};
+        }
       }else{
         const health=parseObject(await readText(response.body,64*1024,attempt.signal));
         if(response.status===200&&health&&health.status==='ready'&&health.app==='orbital-chemistry'){
@@ -120,7 +139,8 @@ async function waitUntilReady(endpoint:URL,token:string,signal:AbortSignal,fresh
       diagnostic('warmup',attempt.signal.aborted?'attempt-timeout':'unavailable');
     }finally{attempt.cleanup();}
     const remaining=deadline-Date.now();
-    if(remaining>0)await delay(Math.min(HEALTH_RETRY_MS,remaining),signal);
+    if(remaining>0)await delay(Math.min(wait,remaining),signal);
+    backoff=Math.min(backoff*2,MAX_HEALTH_BACKOFF_MS);
   }
   diagnostic('warmup','deadline');
   return {ok:false,response:json('雲端服務啟動較久，原結構已保留，請稍後再試。',503)};

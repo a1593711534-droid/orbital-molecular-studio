@@ -92,9 +92,33 @@ test('warmup auth and redirects fail immediately without leaking upstream detail
   for(const status of [301,302,303,307,308,401,403]){let calls=0;globalThis.fetch=async()=>{calls++;return Response.json({error:'private detail'},{status,headers:{Location:'https://other.example/secret'}});};const result=await proxyChemistry(request(),'/api/molecule');assert.equal(result.status,503);assert.equal(calls,1);assert.equal(result.headers.get('location'),null);assert.equal((await result.text()).includes('private detail'),false);}
 });
 
-test('busy health fails immediately and busy calculation is never replayed',async()=>{
+test('JSON busy health fails immediately and busy calculation is never replayed',async()=>{
   let calls=0;globalThis.fetch=async()=>{calls++;return Response.json({error:'忙碌中'},{status:429});};assert.equal((await proxyChemistry(request(),'/api/molecule')).status,429);assert.equal(calls,1);
   let posts=0;globalThis.fetch=async url=>{if(isHealth(url))return Response.json(health);posts++;return Response.json({error:'忙碌中'},{status:429});};assert.equal((await proxyChemistry(request(),'/api/molecule')).status,429);assert.equal(posts,1);
+});
+
+test('edge 429 waits for Retry-After then backs off without replaying computation',async t=>{
+  fakeTime(t);const calls=[];
+  globalThis.fetch=async(url,options)=>{
+    calls.push(options.method||'GET');
+    if(!isHealth(url))return Response.json({formula:'CH4'});
+    if(calls.length===1)return new Response('sleeping',{status:429,headers:{'Retry-After':'5'}});
+    if(calls.length===2)return new Response('starting',{status:429});
+    return Response.json(health);
+  };
+  const pending=proxyChemistry(request(),'/api/molecule');await setImmediate();
+  await advance(t,4999);assert.deepEqual(calls,['GET']);
+  await advance(t,1);await advance(t,2999);assert.deepEqual(calls,['GET','GET']);
+  await advance(t,1);assert.equal((await pending).status,200);
+  assert.deepEqual(calls,['GET','GET','GET','POST']);
+});
+
+test('an edge Retry-After date beyond the warmup budget returns its delay without another request',async t=>{
+  fakeTime(t);let calls=0;
+  globalThis.fetch=async()=>{calls++;return new Response('edge busy',{status:429,
+    headers:{'Retry-After':new Date(Date.now()+90_000).toUTCString()}});};
+  const response=await proxyChemistry(request(),'/api/molecule');
+  assert.equal(response.status,429);assert.equal(response.headers.get('Retry-After'),'90');assert.equal(calls,1);
 });
 
 test('calculation HTML or server failure never replays the POST',async()=>{
