@@ -62,7 +62,7 @@ function safeSvg(source) {
   return new XMLSerializer().serializeToString(svg);
 }
 
-export default function StructureInput({initialValue='',busy=false,hosted=false,onGenerate,onClose}) {
+export default function StructureInput({initialValue='',busy=false,hosted=false,connectionText='',retryConnectionButton,onConnectionError,onGenerate,onClose}) {
   const [value,setValue]=useState(initialValue||''), [selection,setSelection]=useState([(initialValue||'').length,(initialValue||'').length]);
   const [preview,setPreview]=useState(null),[previewState,setPreviewState]=useState(initialValue?'checking':'empty');
   const [moreElements,setMoreElements]=useState(false),[composing,setComposing]=useState(false),[submitting,setSubmitting]=useState(false);
@@ -76,7 +76,8 @@ export default function StructureInput({initialValue='',busy=false,hosted=false,
   const focusedToken=tokens.find(t=>selection[0]>=t.start&&selection[0]<t.end)||tokens.find(t=>t.end===selection[0]);
   const svg=useMemo(()=>safeSvg(preview?.svg),[preview?.svg]);
   const inputBusy=busy||submitting;
-  const canGenerate=previewState==='valid'&&preview?.valid&&preview?.source===value&&!inputBusy&&!composing;
+  const waitingForCloud=Boolean(connectionText);
+  const canGenerate=!waitingForCloud&&previewState==='valid'&&preview?.valid&&preview?.source===value&&!inputBusy&&!composing;
   const openRings=useMemo(()=>{
     const counts=new Map();
     for(const t of tokens)if(t.kind==='ring')counts.set(t.raw,(counts.get(t.raw)||0)+1);
@@ -108,7 +109,7 @@ export default function StructureInput({initialValue='',busy=false,hosted=false,
     const id=++requestId.current;
     if(!value.trim()){setPreview(null);setPreviewState('empty');return;}
     setPreviewState('checking');
-    if(composing)return;
+    if(composing||waitingForCloud)return;
     const controller=new AbortController();
     const timer=setTimeout(async()=>{
       try {
@@ -117,12 +118,13 @@ export default function StructureInput({initialValue='',busy=false,hosted=false,
         setPreview({...data,source:value});setPreviewState(data.valid?'valid':'invalid');
       } catch(error) {
         if(error.name==='AbortError'||requestId.current!==id)return;
+        onConnectionError?.(error);
         setPreview({valid:false,source:value,message:error.message==='Failed to fetch'?(hosted?'無法連線至雲端預覽，請稍後重試。':'無法連線至本機預覽，請確認 App 已啟動。'):error.message});
         setPreviewState('error');
       }
     },350);
     return ()=>{clearTimeout(timer);controller.abort();};
-  },[value,composing,retry]);
+  },[value,composing,retry,waitingForCloud]);
 
   useEffect(()=>{
     const host=previewHost.current;
@@ -227,10 +229,10 @@ export default function StructureInput({initialValue='',busy=false,hosted=false,
         <div className={'si-preview-image '+(previewState==='checking'?'is-checking':'')} ref={previewHost} role="img" aria-label={previewState==='valid'?'目前輸入的二維分子連接圖':'等待完整的分子連接'}>
           {svg&&preview?.source===value&&preview?.valid?<div className="si-svg" dangerouslySetInnerHTML={{__html:svg}}/>:<div className="si-preview-placeholder"><svg viewBox="0 0 160 100" aria-hidden="true"><path d="M28 68 72 40 116 66" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"/><circle cx="28" cy="68" r="10"/><circle cx="72" cy="40" r="10"/><circle cx="116" cy="66" r="10"/></svg><span>{previewState==='empty'?'從一個原子開始':previewState==='checking'?'讀取連接中…':'接好符號，就能看見結構'}</span></div>}
         </div>
-        <div className={'si-preview-status '+previewState} role="status" aria-live="polite">
+        {waitingForCloud?<div className="si-preview-status" role="status"><span>{connectionText}</span>{retryConnectionButton}</div>:<div className={'si-preview-status '+previewState} role="status" aria-live="polite">
           {previewState==='checking'?<><LoaderCircle className="si-spin" size={18}/><span>即時驗證中</span></>:previewState==='valid'?<><Check size={18}/><span><b><Formula value={preview?.displayFormula||preview?.formula} parts={preview?.formulaParts} charge={preview?.charge}/></b><small>{preview?.atomCountIncludesHydrogen?'含氫共 ':''}{preview?.atomCount} 原子 · {preview?.bondCount} 化學鍵</small></span></>:previewState==='empty'?<><ArrowRight size={18}/><span>加入原子後，預覽會自動更新</span></>:<><span className="si-status-dot"/><span>{preview?.message||'請檢查輸入的連接方式。'}</span>{previewState==='error'&&<button type="button" className="si-icon-button" aria-label="重試結構預覽" title="重試預覽" onClick={()=>setRetry(n=>n+1)}><RotateCcw size={18}/></button>}</>}
-        </div>
-        {previewState==='valid'&&<><p className="si-preview-note">數字對應輸入中的原子。生成後可在 3D 畫面繼續編輯。</p>{preview?.warnings?.map((warning,index)=><p className="si-preview-note" key={index}>{warning}</p>)}</>}
+        </div>}
+        {!waitingForCloud&&previewState==='valid'&&<><p className="si-preview-note">數字對應輸入中的原子。生成後可在 3D 畫面繼續編輯。</p>{preview?.warnings?.map((warning,index)=><p className="si-preview-note" key={index}>{warning}</p>)}</>}
       </aside>
     </div>
     <footer className="si-footer"><span className={submitError?'si-submit-error':''} role={submitError?'alert':undefined}>{submitError||'輸入時不會變更目前模型'}</span><button type="button" className="si-generate" onClick={generate} disabled={!canGenerate}>{inputBusy?<LoaderCircle size={18} className="si-spin"/>:<Sparkles size={18}/>}生成三維結構<ArrowRight size={18}/></button></footer>

@@ -17,6 +17,12 @@ function forgetReadiness(endpoint:URL,token:string){
   if(readyService?.origin===endpoint.origin&&readyService.token===token)readyService=undefined;
 }
 function json(error:string,status:number){return Response.json({error},{status,headers:{'Cache-Control':'no-store'}});}
+function startupFailure(limited:boolean,retryMs:number){
+  return Response.json(limited
+    ? {code:'wake_rate_limited',error:'Render 暫時限制啟動連線，計算尚未送出。'}
+    : {code:'startup_timeout',error:'Render 啟動較久，計算尚未送出。'},
+    {status:limited?429:503,headers:{'Cache-Control':'no-store','Retry-After':String(Math.max(1,Math.ceil(retryMs/1000)))}});
+}
 function diagnostic(stage:'warmup'|'compute',reason:string,response?:Response){
   const type=response?.headers.get('content-type')?.toLowerCase();
   // Never log credentials, payloads, URLs, exception messages or raw headers.
@@ -110,20 +116,18 @@ async function waitUntilReady(endpoint:URL,token:string,signal:AbortSignal,fresh
         diagnostic('warmup','configuration',response);await discard(response);
         return {ok:false,response:json('雲端服務連線設定需要更新。',503)};
       }
-      // A sleeping instance can be preceded by a non-JSON 429 from Render's
-      // edge. An application JSON 429 still means the chemistry service is busy.
-      const edgeRateLimit=response.status===429&&!isJSON(response.headers);
-      if(response.status>=400&&response.status<500&&!edgeRateLimit){
+      // The backend's concurrency limit applies to computation POSTs only.
+      // A 429 during this GET means the readiness check was rate-limited.
+      const limited=response.status===429;
+      if(response.status>=400&&response.status<500&&!limited){
         diagnostic('warmup','rejected',response);await discard(response);
-        return {ok:false,response:json(response.status===429?'計算服務忙碌中，請稍後再試。':'雲端服務連線設定需要更新。',response.status===429?429:503)};
+        return {ok:false,response:json('雲端服務連線設定需要更新。',503)};
       }
-      if(edgeRateLimit||response.status>=500||!isJSON(response.headers)){
+      if(limited||response.status>=500||!isJSON(response.headers)){
         wait=Math.max(backoff,retryAfterMs(response.headers));
         diagnostic('warmup','not-ready',response);await discard(response);
-        if(edgeRateLimit&&wait>=deadline-Date.now()){
-          const busy=json('計算服務忙碌中，請稍後再試。',429);
-          busy.headers.set('Retry-After',String(Math.ceil(wait/1000)));
-          return {ok:false,response:busy};
+        if(wait>=deadline-Date.now()){
+          return {ok:false,response:startupFailure(limited,wait)};
         }
       }else{
         const health=parseObject(await readText(response.body,64*1024,attempt.signal));
@@ -143,7 +147,7 @@ async function waitUntilReady(endpoint:URL,token:string,signal:AbortSignal,fresh
     backoff=Math.min(backoff*2,MAX_HEALTH_BACKOFF_MS);
   }
   diagnostic('warmup','deadline');
-  return {ok:false,response:json('雲端服務啟動較久，原結構已保留，請稍後再試。',503)};
+  return {ok:false,response:startupFailure(false,HEALTH_RETRY_MS)};
 }
 
 export async function proxyChemistry(request:Request,path:'/api/molecule'|'/api/health') {
@@ -194,7 +198,10 @@ export async function proxyChemistry(request:Request,path:'/api/molecule'|'/api/
     // not mean a calculation finished. Returning a stream would clear it early.
     const result=await readText(response.body,MAX_RESPONSE,compute.signal);
     parseObject(result);
-    return new Response(result,{status:response.status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
+    const headers=new Headers({'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
+    const retryMs=retryAfterMs(response.headers);
+    if(response.status===429&&retryMs>0)headers.set('Retry-After',String(Math.ceil(retryMs/1000)));
+    return new Response(result,{status:response.status,headers});
   } catch {
     forgetReadiness(endpoint,token);
     const timedOut=operation.signal.aborted||compute?.signal.aborted;

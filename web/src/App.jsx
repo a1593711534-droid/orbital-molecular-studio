@@ -3,7 +3,7 @@ import {Atom,Plus,Minus,ChevronDown,Undo2,Redo2,Download,Layers3,Ruler,MousePoin
 import MoleculeScene from './MoleculeScene.jsx';
 import StructureInput from './StructureInput.jsx';
 import Formula from './Formula.jsx';
-import {chemistryRequest} from './chemistryClient.js';
+import {chemistryRequest, warmChemistry} from './chemistryClient.js';
 import ElectronicViewControl from './ElectronicViewControl.jsx';
 import {editableBond, replaceAtom, touchGraph} from './graphEditing.js';
 import {ELEMENTS, ION_CHARGES, hybridizationLabel} from './chemistryExamples.js';
@@ -18,14 +18,19 @@ function measure(atoms,ids){const p=ids.map(i=>atoms.find(a=>a.id===i)?.position
 function StereoDiagram({value}){return <svg viewBox="0 0 100 52" aria-hidden="true"><path d="M34 24H66M34 29H66M34 26L18 10M34 26L18 44M66 26L82 10M66 26L82 44" fill="none" stroke="currentColor" strokeWidth="2"/><circle cx="18" cy="10" r="6" fill="currentColor"/><circle cx="82" cy={value==='Z'?10:44} r="6" fill="currentColor"/><circle cx="18" cy="44" r="4" fill="none" stroke="currentColor"/><circle cx="82" cy={value==='Z'?44:10} r="4" fill="none" stroke="currentColor"/></svg>}
 function StereoControl({bond,busy,onChange}){const c=bond.stereoControl;if(!c)return null;return <section className="stereo-control" aria-label="設定雙鍵構型"><h3>雙鍵構型</h3>{c.editable?<><div className="stereo-options">{['Z','E'].map(value=><button key={value} aria-label={`設定 ${value} 構型`} aria-pressed={c.current===value} className={'stereo-option '+(c.current===value?'selected':'')} disabled={busy||c.current===value} onClick={()=>onChange(value)}><StereoDiagram value={value}/><strong>{c.cisTrans?(value==='Z'?'順式（Z）':'反式（E）'):value+' 構型'}</strong><small>{value==='Z'?'同側':'異側'}</small></button>)}</div><div className="stereo-caption">{c.cisTrans?'實心點代表非氫基團':'實心點代表 CIP 高優先序基團'}</div><button className="text-button" aria-label="清除雙鍵構型指定" disabled={busy||c.current==='unspecified'} onClick={()=>onChange('unspecified')}>{c.current==='unspecified'?'目前未指定':'清除構型指定'}</button></>:<p className="compact-note">{c.reason}</p>}</section>}
 
-export default function App({hosted=false}){
- const [model,setModel]=useState(null),[busy,setBusy]=useState(false),[loaded,setLoaded]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState(''),[name,setName]=useState('未命名結構');
+export default function App({hosted=false,wakeUrl}){
+ const [model,setModel]=useState(null),[calculating,setBusy]=useState(false),[loaded,setLoaded]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState(''),[name,setName]=useState('未命名結構');
+ const [cloudReady,setCloudReady]=useState(false),[warmupError,setWarmupError]=useState(null),[warmupAttempt,setWarmupAttempt]=useState({automatic:false}),[retrySeconds,setRetrySeconds]=useState(0);
+ const warming=hosted&&!cloudReady&&!warmupError;
+ const autoRetry=warmupError?.canRetryStartup&&!warmupError.fromOperation&&!warmupAttempt.automatic;
+ const starting=hosted&&!loaded;
+ const busy=calculating||starting;
  const [mode,setMode]=useState('build'),[panel,setPanel]=useState(null),[selectedAtoms,setSelectedAtoms]=useState([]),[selectedBond,setSelectedBond]=useState(null),[element,setElement]=useState('C'),[order,setOrder]=useState(1),[charge,setCharge]=useState(0),[replacement,setReplacement]=useState('C'),[rotation,setRotation]=useState(30);
  const [hydrogens,setHydrogens]=useState(true),[lonePairs,setLonePairs]=useState(true),[labels,setLabels]=useState(false),[pi,setPi]=useState(false),[representation,setRepresentation]=useState('ball-stick'),[samples,setSamples]=useState(8),[showInput,setShowInput]=useState(false),[showHelp,setShowHelp]=useState(false),[showExport,setShowExport]=useState(false),[moreElements,setMoreElements]=useState(false),[showTable,setShowTable]=useState(false),[history,setHistory]=useState([]),[future,setFuture]=useState([]);
  const [electronicView,setElectronicView]=useState('hybrid');
  const [hydrogenMode,setHydrogenMode]=useState('auto');
  const [slowCompute,setSlowCompute]=useState(false);
- useEffect(()=>{setSlowCompute(false);if(!busy||!hosted)return;const timer=setTimeout(()=>setSlowCompute(true),8000);return()=>clearTimeout(timer);},[busy,hosted]);
+ useEffect(()=>{setSlowCompute(false);if(!hosted||(!calculating&&!warming))return;const timer=setTimeout(()=>setSlowCompute(true),8000);return()=>clearTimeout(timer);},[calculating,warming,hosted]);
  const hasElectronicSystem=!!model?.resonance?.groups?.length;
  const [uiScale,setUiScale]=useState(()=>{try{const v=Number(localStorage.getItem('orbital-ui-scale'));return [1,1.125,1.25].includes(v)?v:1;}catch{return 1;}});
  const sceneRef=useRef(),fileRef=useRef(),modelRef=useRef(null),recoveryPending=useRef(false),inflight=useRef(false),dialogRef=useRef(null),exportRef=useRef(null);modelRef.current=model;
@@ -37,11 +42,79 @@ export default function App({hosted=false}){
  const measurement=useMemo(()=>model?measure(model.atoms,selectedAtoms):null,[model,selectedAtoms]);
  const pairCount=model?.atoms.reduce((s,a)=>s+(a.lonePairs?.length||0),0)||0;
  const clearSelection=()=>{setSelectedAtoms([]);setSelectedBond(null);};
+ const queuedOperation=useRef(null);
+ useEffect(()=>{
+  if(cloudReady&&queuedOperation.current){queuedOperation.current(true);queuedOperation.current=null;}
+ },[cloudReady]);
+ useEffect(()=>()=>{queuedOperation.current?.(false);queuedOperation.current=null;},[]);
  async function run(payload,{remember=true,message=''}={}){
   if(inflight.current)return null;inflight.current=true;setBusy(true);setError('');
-  try{const data=await chemistryRequest(payload,{hosted});if(!data.atoms)throw new Error('計算引擎沒有回傳分子結構');recoveryPending.current=false;if(remember){setHistory(h=>[...h.slice(-29),{model:modelRef.current,name}]);setFuture([]);}setModel(data);clearSelection();if(message)setNotice(message);return data;}catch(e){setError(e.message==='Failed to fetch'?(hosted?'雲端計算暫時無法連線，請稍後重試。':'本機計算引擎未連線，請以 launch.cmd 啟動。'):e.message);return null;}finally{inflight.current=false;setBusy(false);}
+  try{
+   if(hosted&&!cloudReady){
+    const ready=await new Promise(resolve=>{queuedOperation.current=resolve;});
+    if(!ready)return null;
+   }
+   const data=await chemistryRequest(payload,{hosted});if(!data.atoms)throw new Error('計算引擎沒有回傳分子結構');recoveryPending.current=false;if(remember){setHistory(h=>[...h.slice(-29),{model:modelRef.current,name}]);setFuture([]);}setModel(data);clearSelection();if(message)setNotice(message);return data;}catch(e){operationError(e);setError(e.message==='Failed to fetch'?(hosted?'雲端計算暫時無法連線，請稍後重試。':'本機計算引擎未連線，請以 launch.cmd 啟動。'):e.message);return null;}finally{inflight.current=false;setBusy(false);}
  }
- useEffect(()=>{let saved;try{saved=JSON.parse(localStorage.getItem('orbital-v1-session'));}catch{}if(saved?.molblock){recoveryPending.current=true;setName(typeof saved.name==='string' && saved.name ? saved.name : '未命名結構');run({action:'analyze',molblock:saved.molblock,stereoGraph:saved.graph},{remember:false}).then(()=>setLoaded(true));}else setLoaded(true);},[]);
+ useEffect(()=>{
+  if(!hosted)return;
+  let active=true;
+  warmChemistry(warmupAttempt.automatic?undefined:wakeUrl).then(()=>{
+   if(active)setCloudReady(true);
+  }).catch(e=>{
+   if(!active)return;
+   setRetrySeconds(Math.max(0,Math.ceil(((e.retryAt||0)-Date.now())/1000)));
+   setWarmupError(e);
+  });
+  return ()=>{active=false;};
+ },[hosted,wakeUrl,warmupAttempt]);
+ useEffect(()=>{
+  if(!warmupError)return;
+  let timer;
+  function tick(){
+   const remaining=Math.max(0,Math.ceil(((warmupError.retryAt||0)-Date.now())/1000));
+   setRetrySeconds(remaining);
+   if(remaining)timer=setTimeout(tick,1000);
+   else if(autoRetry){setWarmupError(null);setWarmupAttempt({automatic:true});}
+  }
+  tick();
+  return ()=>clearTimeout(timer);
+ },[warmupError,autoRetry]);
+ function retryWarmup(){
+  if(warmupError?.retryAt>Date.now())return;
+  setWarmupError(null);setWarmupAttempt({automatic:false});
+ }
+ function operationError(e){
+  if(!hosted||!e.canRetryStartup)return;
+  e.fromOperation=true;
+  setCloudReady(false);setWarmupError(e);
+  setRetrySeconds(Math.max(0,Math.ceil(((e.retryAt||0)-Date.now())/1000)));
+ }
+ const retryLabel=retrySeconds>0?`${retrySeconds} 秒後可重試`:'重試連線';
+ let connectionText='';
+ if(hosted&&!cloudReady){
+  if(autoRetry)connectionText=retrySeconds>0?`雲端服務尚未就緒，${retrySeconds} 秒後自動再檢查。`:'正在重新確認雲端服務。';
+  else if(warmupError)connectionText=warmupError.message;
+  else if(warmupAttempt.automatic)connectionText='正在重新確認雲端服務。';
+  else connectionText=slowCompute?'服務啟動中，首次連線可能需要一分鐘以上。':'正在喚醒雲端計算服務。';
+ }
+ const canRetryConnection=!!warmupError&&!autoRetry;
+ const retryConnectionButton=canRetryConnection&&<div className="cloud-retry">
+  <button className="text-button" type="button" disabled={retrySeconds>0} onClick={retryWarmup}>{retryLabel}</button>
+  {warmupAttempt.automatic&&wakeUrl&&<a href={wakeUrl} target="_blank" rel="noreferrer">開啟 Render 狀態頁</a>}
+ </div>;
+ const restoreStarted=useRef(false);
+ useEffect(()=>{
+  if(restoreStarted.current)return;
+  let saved;
+  try{saved=JSON.parse(localStorage.getItem('orbital-v1-session'));}catch{}
+  if(saved?.molblock&&hosted&&!cloudReady)return;
+  restoreStarted.current=true;
+  if(!saved?.molblock){setLoaded(true);return;}
+  recoveryPending.current=true;
+  setName(typeof saved.name==='string'&&saved.name?saved.name:'未命名結構');
+  run({action:'analyze',molblock:saved.molblock,stereoGraph:saved.graph},{remember:false}).then(()=>setLoaded(true));
+ },[hosted,cloudReady]);
  useEffect(()=>{if(!loaded)return;try{if(model)localStorage.setItem('orbital-v1-session',JSON.stringify({name,molblock:model.molblock,graph:model.graph}));else if(!recoveryPending.current)localStorage.removeItem('orbital-v1-session');}catch{}},[model,name,loaded]);
  useEffect(()=>{try{localStorage.setItem('orbital-ui-scale',String(uiScale));}catch{}},[uiScale]);
  useEffect(()=>{if(!panel||!window.matchMedia('(max-width: 900px)').matches)return;const frame=requestAnimationFrame(()=>document.querySelector('.inspector')?.scrollIntoView({block:'start',behavior:'auto'}));return()=>cancelAnimationFrame(frame);},[panel]);
@@ -84,11 +157,12 @@ export default function App({hosted=false}){
     {hasElectronicSystem&&<ElectronicViewControl value={electronicView} onChange={setElectronicView}/>}
     <div className="workspace-tools"><button className={panel==='display'?'active':''} onClick={()=>openPanel('display')} aria-label="顯示設定"><Layers3 size={19}/><span>顯示</span></button><button className={panel==='compute'?'active':''} onClick={()=>openPanel('compute')} aria-label="計算設定"><FlaskConical size={19}/><span>計算</span></button><button className={panel==='info'?'active':''} onClick={()=>openPanel('info')} aria-label="分子資訊"><Info size={19}/><span>資訊</span></button></div>
     {!model&&!busy&&loaded&&<div className="empty-start"><div className="empty-orbit" aria-hidden="true"><span/><span/><span/></div><h1>從一個原子開始</h1><button className="primary" aria-label="放下第一個原子" onClick={firstAtom}><Plus size={20}/>放下第一個 {element}</button><button className="text-button" onClick={()=>setShowInput(true)}><Braces size={16}/>或輸入結構</button></div>}
+    {connectionText&&!showInput&&<div className="computing cloud-connection">{canRetryConnection?<Info size={18}/>:<LoaderCircle size={18} className="spin"/>}<span role={canRetryConnection?'alert':'status'}>{connectionText}{calculating?' 就緒後會繼續目前操作。':''}</span>{retryConnectionButton}</div>}
     {model&&mode==='select'&&!atom&&!bond&&<div className="mode-nudge"><MousePointer2 size={16}/>點選原子或化學鍵</div>}
     {mode==='build'&&<div className="build-dock"><div className="element-palette" aria-label="原子工具">{elementButtons(ELEMENTS.slice(0,6))}<div className="more-elements"><button className={'element more '+(ELEMENTS.slice(6).some(a=>a[0]===element)?'selected':'')} aria-label="更多元素" onClick={()=>setMoreElements(v=>!v)}><MoreHorizontal size={23}/><small>{ELEMENTS.slice(6).find(a=>a[0]===element)?.[0]||'更多'}</small></button>{moreElements&&<div className="menu extra-elements">{elementButtons(ELEMENTS.slice(6))}</div>}</div></div><div className="build-actions"><div className="bond-order" aria-label="新鍵鍵級">{bondOrderButtons(order,setOrder)}</div>{model?<button className="continue-build" aria-label={`接上 ${element} 原子`} disabled={busy||!atom||atom.element==='H'} onClick={()=>appendAtom(atom.id)}><Plus size={17}/><span>{atom?`${atomName(model,atom.id)} 接 ${element}`:'點模型接原子'}</span></button>:<span className="auto-hydrogen">氫自動補足</span>}</div></div>}
     {mode==='connect'&&model&&<div className="action-dock connect-dock"><Link2 size={20}/><div className="pick-steps"><span className={selectedAtoms.length?'filled':''}>{selectedAtoms.length?atomName(model,selectedAtoms[0]):'1'}</span><i>→</i><span>2</span></div><strong>{selectedAtoms.length?'再點一個原子':'點兩個原子'}</strong><div className="bond-order" aria-label="連接鍵級">{bondOrderButtons(order,setOrder)}</div></div>}
     {mode==='measure'&&<div className="action-dock measure-dock"><Ruler size={20}/><div><strong className="measurement-value">{measurement?`${measurement.label} ${number(measurement.value)} ${measurement.unit}`:'依序點選 2–4 個原子'}</strong><div className="measurement-atoms">{selectedAtoms.length?selectedAtoms.map(id=><button key={id} onClick={()=>setSelectedAtoms(s=>s.filter(x=>x!==id))}>{atomName(model,id)}<X size={11}/></button>):[1,2,3,4].map(n=><span key={n}>{n}</span>)}</div></div><IconButton icon={X} label="清除量測" onClick={clearSelection}/></div>}
-    {busy&&<div className="computing" role="status"><LoaderCircle size={19} className="spin"/>{slowCompute?'雲端啟動或計算中，請稍候…':'正在計算形狀'}</div>}
+    {calculating&&!connectionText&&<div className="computing" role="status"><LoaderCircle size={19} className="spin"/>{starting?'正在還原上次的結構':slowCompute?'雲端啟動或計算中，請稍候…':'正在計算形狀'}</div>}
     <div className="stage-bottom"><span className="scene-gesture"><span className="mouse-hint">拖曳旋轉 · 滾輪縮放</span><span className="touch-hint">單指旋轉 · 雙指縮放／平移</span></span><div className="view-tools"><IconButton icon={Focus} label="置中模型" onClick={()=>sceneRef.current?.resetView()}/><IconButton icon={Camera} label="匯出模型 PNG" disabled={!model} onClick={()=>exportFile('png')}/><button className="number-picker" aria-label="依編號選取" aria-expanded={showTable} onClick={()=>setShowTable(v=>!v)}>#<span>編號</span></button></div></div>
     {showTable&&<div className="number-menu menu"><header><strong>依編號操作</strong><IconButton icon={X} label="關閉編號選取" onClick={()=>setShowTable(false)}/></header><select aria-label="依編號選取原子" value="" onChange={e=>atomClick(+e.target.value)}><option value="" disabled>選擇原子…</option>{model?.atoms.map(a=><option key={a.id} value={a.id}>{atomName(model,a.id)} · {hybridizationLabel(a)}</option>)}</select><select aria-label="依編號選取化學鍵" value="" onChange={e=>bondClick(+e.target.value)}><option value="" disabled>選擇化學鍵…</option>{model?.bonds.map(b=><option key={b.id} value={b.id}>{atomName(model,b.a)} {b.order===2?'=':b.order===3?'≡':'—'} {atomName(model,b.b)}</option>)}</select></div>}
    </main>
@@ -103,8 +177,8 @@ export default function App({hosted=false}){
     {panel==='info'&&<><label className="field-label project-name-field">專案名稱<input aria-label="資訊面板專案名稱" value={name} onChange={e=>setName(e.target.value)} maxLength={80}/></label>{model?<><h3 className="info-formula"><Formula value={model.displayFormula||model.formula} parts={model.formulaParts} charge={model.charge}/></h3><Property label="莫耳質量">{number(model.mass,3)} g/mol</Property><Property label="原子 / 化學鍵">{model.atoms.length} / {model.bonds.length}</Property><Property label="形式電荷">{model.charge}</Property>{geometryLabel&&<><Property label="幾何來源">{geometryLabel}</Property>{model.geometrySource.shape&&<Property label="模型形狀">{model.geometrySource.shape}</Property>}{model.geometrySource.electronGeometry&&<Property label="中心電子域幾何">{model.geometrySource.electronGeometry}</Property>}{model.geometrySource.model&&<Property label="VSEPR">{model.geometrySource.model}</Property>}</>}{model.electronicState&&<p className="compact-note" role="note">{model.electronicState.description}</p>}<Property label="Lewis 孤電子對">{pairCount} 對</Property><Property label="可旋轉重原子鍵">{model.bonds.filter(b=>b.rotatable).length}</Property><details className="details"><summary>結構式與索引</summary><Property label="Hill 化學式"><Formula value={model.formula} charge={model.charge}/></Property><code className="smiles-readout">{model.smiles}</code><button className="secondary full" onClick={()=>setShowInput(true)}>編輯結構輸入</button></details><details className="details"><summary>計算方法與注意事項 <span className="count">{model.warnings?.length||0}</span></summary><p className="compact-note">{model.method}</p>{model.warnings?.map((w,i)=><p className="compact-note" key={i}>{w}</p>)}</details></>:<p className="compact-note">先建立分子，再查看其性質。</p>}<button className="secondary full" onClick={()=>setShowHelp(true)}><CircleHelp size={17}/>方法與使用說明</button><p className="version-note">ORBITAL 1.3.0 · {hosted?'雲端計算':'本機計算'}</p></>}
    </div></aside>}
   </div>
-  <footer className="studio-footer"><span><i className={busy?'working':''}/>{busy?'計算中':!loaded?'正在還原':hosted?'雲端計算 · 本機儲存':'本機工作區'}</span><span>幾何來源見分子資訊 · 電子對與軌域為示意</span><button aria-label="方法與使用說明" onClick={()=>setShowHelp(true)}><CircleHelp size={15}/><span>使用說明</span></button></footer>
-  {showInput&&<div className="modal-backdrop"><div className="input-dialog" ref={dialogRef} role="dialog" aria-modal="true" aria-label="輸入結構"><StructureInput hosted={hosted} initialValue={model?.smiles||''} busy={busy} onClose={()=>setShowInput(false)} onGenerate={async smiles=>{const data=await run({action:'generate',smiles,samples},{message:'三維結構已生成'});if(data){setShowInput(false);setMode('select');setPanel(null);}return !!data;}}/></div></div>}
+  <footer className="studio-footer"><span role="status"><i className={busy?'working':''}/>{hosted&&warmupError?'雲端未連線':warming?'正在連線至雲端':starting?'正在還原':calculating?'計算中':!loaded?'正在還原':hosted?'雲端已就緒 · 本機儲存':'本機工作區'}</span><span>幾何來源見分子資訊 · 電子對與軌域為示意</span><button aria-label="方法與使用說明" onClick={()=>setShowHelp(true)}><CircleHelp size={15}/><span>使用說明</span></button></footer>
+  {showInput&&<div className="modal-backdrop"><div className="input-dialog" ref={dialogRef} role="dialog" aria-modal="true" aria-label="輸入結構"><StructureInput hosted={hosted} connectionText={connectionText} retryConnectionButton={retryConnectionButton} onConnectionError={operationError} initialValue={model?.smiles||''} busy={busy} onClose={()=>setShowInput(false)} onGenerate={async smiles=>{const data=await run({action:'generate',smiles,samples},{message:'三維結構已生成'});if(data){setShowInput(false);setMode('select');setPanel(null);}return !!data;}}/></div></div>}
   {showHelp&&<div className="modal-backdrop"><div className="help-dialog" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="help-title"><header><h2 id="help-title">操作與科學方法</h2><IconButton icon={X} label="關閉說明" onClick={()=>setShowHelp(false)}/></header><div className="visual-guide">{[[Plus,'接原子','選元素 → 點原子'],[MousePointer2,'編輯','點原子或鍵 → 修改'],[Link2,'連接','點兩個原子 → 成鍵'],[Ruler,'量測','點 2–4 個原子']].map(([I,t,s])=><div key={t}><I size={25}/><strong>{t}</strong><span>{s}</span></div>)}</div><details className="details"><summary>觸控、滑鼠與快捷鍵</summary><p>觸控：單指旋轉，雙指縮放與平移，輕點選取。滑鼠：拖曳旋轉，滾輪縮放，右鍵拖曳平移。Ctrl / ⌘ + Z 復原，Shift + Ctrl / ⌘ + Z 重做，Delete 刪除選取，Esc 關閉面板。</p></details><details className="details"><summary>三維形狀與立體化學</summary><p>RDKit ETKDGv3 取樣後以 MMFF94s 或 UFF 最佳化。可指定雙鍵 E/Z，四面體構型可透過 SMILES @ / @@ 指定。未指定構型的單次取樣不是唯一異構物。部分常見分子使用 NIST 氣相參考幾何；常見 VSEPR 結構使用明確標示的理想幾何。這些模型不提供力場能量，理想角度與示意鍵長不是實驗量測值。匯入時保留原座標。</p></details><details className="details"><summary>旋轉、電子對與 π 軌域</summary><p>多重鍵、芳香鍵、醯胺 C–N 與環內鍵不提供單鍵自由扭轉。電子點與葉瓣為計數及方向示意，並非量子電子密度。「Lewis 式」顯示電子計數與形式電荷；「離域示意」將參與共軛的電子放在整個 π 系統中解讀，等價鍵以一致虛線呈現。軌域雙葉是示意，並非實算電子密度。共振式不代表分子在兩個結構之間切換。共軛單鍵的可旋轉不代表沒有能障。</p></details><details className="details"><summary>適用範圍</summary><p>常見主族分子，上限 80 重原子／200 總原子。支援範例中的五、六電子域 VSEPR 模型及 O₂、NO、NO₂ 氣相參考結構；其他自由基、金屬配位及離子晶格仍不支援。Na⁺、K⁺、Mg²⁺、Ca²⁺、Al³⁺ 以單一離子表示，不推測溶液水合結構。超價成鍵不能由 sp³d／sp³d² 字樣當作真實機制解釋。力場為近似，溶劑、溫度與晶體環境可能改變構形。MOL/SDF 匯入需要 3D 座標；XYZ 匯出不保存化學鍵。</p></details><div className="source-links"><a href="https://www.rdkit.org/docs/RDKit_Book.html" target="_blank" rel="noreferrer">RDKit 方法文件 ↗</a><a href="https://iupac.qmul.ac.uk/BlueBook/P9.html" target="_blank" rel="noreferrer">IUPAC 立體化學 ↗</a></div></div></div>}
   {error&&<div className="toast error" role="alert"><Info size={19}/><span>{error}</span><IconButton icon={X} label="關閉錯誤" onClick={()=>setError('')}/></div>}{notice&&!error&&<div className="toast success" role="status"><Check size={18}/><span>{notice}</span></div>}
  </div>;

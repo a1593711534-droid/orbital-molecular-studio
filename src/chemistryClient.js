@@ -20,6 +20,56 @@ function rememberPreview(key,data){
   while(previews.size>MAX_PREVIEWS)previews.delete(previews.keys().next().value);
 }
 
+let pendingWarmup;
+function warmupFailure(response,data){
+  let message;
+  if(response.status===401)message='登入已逾時，請重新整理並登入。';
+  else if(data?.code==='wake_rate_limited')message='雲端服務的啟動請求暫時受限，請稍後重試。';
+  else if(data?.code==='startup_timeout')message='雲端服務啟動時間較長，請重試連線。';
+  else if(typeof data?.error==='string'&&data.error.trim())message=data.error;
+  else if(response.status===429)message='計算服務忙碌中，請稍後再試。';
+  else message='雲端計算服務暫時無法回應，請重試連線。';
+  const error=new Error(message);
+  error.canRetryStartup=data?.code==='wake_rate_limited'||data?.code==='startup_timeout';
+  const retryAfter=response.headers.get('Retry-After');
+  if(retryAfter){
+    const retryAt=/^\d+$/.test(retryAfter)?Date.now()+Number(retryAfter)*1000:Date.parse(retryAfter);
+    if(Number.isFinite(retryAt)&&retryAt>Date.now())error.retryAt=retryAt;
+  }
+  return error;
+}
+async function checkCloudHealth(wakeUrl){
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),135_000);
+  try{
+    // The public liveness endpoint accepts no user data. Its opaque response
+    // cannot confirm readiness; only the authenticated, same-origin GET can.
+    if(wakeUrl){
+      void fetch(wakeUrl,{method:'GET',mode:'no-cors',credentials:'omit',referrerPolicy:'no-referrer',cache:'no-store'}).catch(()=>{});
+    }
+    const response=await fetch('/api/health',{
+      method:'GET',credentials:'same-origin',cache:'no-store',signal:controller.signal,
+    });
+    const data=await response.json().catch(()=>null);
+    if(controller.signal.aborted)throw new DOMException('Cancelled','AbortError');
+    if(!response.ok)throw warmupFailure(response,data);
+    if(data?.app!=='orbital-chemistry'||data.status!=='ready'){
+      throw new Error('尚未收到計算服務的就緒回應，請重試連線。');
+    }
+  }catch(error){
+    if(controller.signal.aborted)throw new Error('等待雲端計算服務逾時，請重試連線。');
+    if(error instanceof TypeError)throw new Error('無法連上雲端計算服務，請檢查網路後重試。');
+    throw error;
+  }finally{clearTimeout(timer);}
+}
+
+// Multiple mounts can wait on the same GET. A later opening or manual retry
+// performs a fresh check because the Render service may have gone back to sleep.
+export function warmChemistry(wakeUrl){
+  if(!pendingWarmup)pendingWarmup=checkCloudHealth(wakeUrl).finally(()=>{pendingWarmup=undefined;});
+  return pendingWarmup;
+}
+
 // One request per uncached user operation. Never replay a structural edit.
 export async function chemistryRequest(payload, {signal, hosted=false}={}) {
   if(signal?.aborted)throw new DOMException('Cancelled','AbortError');
@@ -43,6 +93,11 @@ export async function chemistryRequest(payload, {signal, hosted=false}={}) {
       throw unreadable();
     }
     if(!data||typeof data!=='object'||Array.isArray(data))throw unreadable();
+    if(hosted&&!response.ok&&(data.code==='startup_timeout'||data.code==='wake_rate_limited')){
+      const failure=warmupFailure(response,data);
+      failure.message+=' 請重新連線後再次提交。';
+      throw failure;
+    }
     if(!response.ok||data.error)throw new Error(typeof data.error==='string'?data.error:statusMessage||'計算未完成');
     if(controller.signal.aborted)throw new DOMException('Cancelled','AbortError');
     rememberPreview(key,data);

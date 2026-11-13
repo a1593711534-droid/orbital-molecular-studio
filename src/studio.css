@@ -111,6 +111,10 @@ summary::-webkit-details-marker{display:none}
 .measurement-atoms{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px;align-items:center}
 .measurement-atoms button{display:flex;align-items:center;gap:5px;padding:3px 7px;background:#edf4e8;border:1px solid #ccdcbc;border-radius:5px;font-size:var(--text-small)}
 .computing{position:absolute;left:50%;top:76px;transform:translateX(-50%);z-index:12;display:flex;align-items:center;gap:10px;background:#fff;border:1px solid #c6d9c1;color:#295b34;box-shadow:0 4px 20px #25482717;border-radius:9px;padding:12px 18px;font-size:var(--text-small);white-space:nowrap}
+.computing.cloud-connection{width:max-content;max-width:calc(100% - 38px);padding:8px 12px;white-space:normal;line-height:1.35}
+.cloud-connection>svg{flex-shrink:0}
+.cloud-retry{display:flex;flex-shrink:0;flex-direction:column;align-items:center;gap:3px}
+.cloud-retry a{font-size:var(--text-small);text-decoration:underline}
 .spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
 .stage-bottom{position:absolute;bottom:11px;left:26px;right:24px;display:flex;justify-content:space-between;align-items:center;gap:12px;z-index:6}
 .scene-gesture{font-size:14px;color:#61735e;white-space:nowrap}
