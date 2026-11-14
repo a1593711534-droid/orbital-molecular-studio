@@ -87,10 +87,11 @@ class ResonanceMetadataTests(unittest.TestCase):
                 self.assertEqual(m["resonance"]["groups"][0]["piElectrons"], 4)
                 self.assertEqual(len(m["resonance"]["groups"][0]["donorAtomIds"]), 1)
 
-    def test_isotope_labels_prevent_false_symmetry(self):
+    def test_isotope_label_survives_electronic_delocalization(self):
         m = model("[18O-][O+]=O")
         self.assertEqual(len(m["resonance"]["states"]), 2)
-        self.assertEqual(m["resonance"]["equivalentBondGroups"], [])
+        self.assertEqual(m["resonance"]["equivalentBondGroups"][0]["bondIds"], [0, 1])
+        self.assertAlmostEqual(m["resonance"]["equivalentBondGroups"][0]["order"], 1.5)
         self.assertEqual(m["atoms"][0]["isotope"], 18)
 
     def test_aromatic_kekule_alternatives_are_retained(self):
@@ -156,7 +157,7 @@ class OzoneGeometryTests(unittest.TestCase):
         imported = process({"action": "analyze", "molblock": block})
         self.assertEqual(imported["geometrySource"]["type"], "imported")
         self.assertIsNone(imported["energy"])
-        np.testing.assert_allclose(np.array([a["position"] for a in imported["atoms"]]), custom - custom.mean(axis=0), atol=1e-6)
+        np.testing.assert_allclose([a["position"] for a in imported["atoms"]], custom, atol=1e-6)
         optimized = process({"action": "optimize", "molblock": block})
         self.assertEqual(optimized["geometrySource"]["type"], "experimental-reference")
         self.assertIsNone(optimized["energy"])

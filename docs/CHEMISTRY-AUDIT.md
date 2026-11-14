@@ -4,6 +4,22 @@
 
 ## 本次原始碼查核
 
+### v1.3.1 稽核複驗（2026-11-14）
+
+| 物種 | 生成與重新套用幾何的判準 |
+| --- | --- |
+| ClO₂⁻ | 以氣相光電子光譜的 Franck–Condon 分析所推估的平衡結構生成折線形，Cl–O 為 1.567 ± 0.002 Å，O–Cl–O 為 116.5 ± 0.5°。不提供力場能量。[Zheng 等，2007](https://doi.org/10.1016/j.cplett.2007.10.018) |
+| ClO₃⁻、BrO₃⁻、CH₃⁻ | 氯酸根與溴酸根的溶液振動光譜，以及甲基負離子的氣相光電子光譜分別支持三角錐形。工作室以 AX₃E 模板表現中央孤電子對；三條鍵間的 109.47° 為理想電子域角，鍵長由共價半徑和設定，能量留空。[氯酸根與溴酸根](https://journals.aps.org/pr/abstract/10.1103/PhysRev.51.235) · [甲基負離子](https://pubs.acs.org/doi/10.1021/jacs.5b07013) |
+| N₂O | `N#[N+][O-]` 與 `[N-]=[N+]=O` 均生成線形 N–N–O；N–N 為 1.1282 Å，N–O 為 1.1842 Å。NIST 軌域表列 1π⁴、2π⁴，合計八個 π 電子，包含非鍵結成分。離域圖沿兩個垂直方向各計四個電子，在兩端各保留一對局域 σ 孤電子。Lewis 視圖保留輸入式的形式電荷和鍵級。[NIST 核間距](https://cccbdb.nist.gov/exp2x.asp?casno=10024972&charge=0) · [NIST 軌域佔據數](https://physics.nist.gov/cgi-bin/Ionization/table.pl?ionization=N2O) |
+| NO₂ | `N(=O)[O]` 與 `O=[N+][O-]` 均生成基態雙重態的折線形模型。兩個 N–O 皆為 1.193 Å，O–N–O 為 134.1°。未成對電子數為一，不從單一 Lewis 式推定自旋密度。[PubChem NO₂](https://pubchem.ncbi.nlm.nih.gov/compound/Nitrogen-dioxide) · [NIST NO₂](https://cccbdb.nist.gov/exp2x.asp?casno=10102440&charge=0) |
+| CS₂、H₂O₂ | CS₂ 根據氣相參考資料生成直線形，兩個 C–S 均為 1.554 Å。H₂O₂ 保留力場扭轉功能，二面角是模型估計；NIST 彙整的 1962 年內座標值為 119.8°，另有一項偶極矩分析採用平衡角 111.5°。[NIST CS₂](https://cccbdb.nist.gov/exp2x.asp?casno=75150&charge=0) · [NIST H₂O₂](https://cccbdb.nist.gov/exp2x.asp?casno=7722841&charge=0) |
+
+SO₂ 的離域圖採一條雙鍵在兩個末端氧之間交換的約定；SO₄²⁻ 採兩條雙鍵在四個末端氧之間交換。兩者的示意鍵級均為 1.5。圖只顯示不同寫法共有的末端氧孤電子對，切換 Lewis 式可檢查輸入的完整電子帳。¹⁸O 標記的 O₃ 保留標記、質量和 Lewis 資料；同一末端的質量標記不會把其所在鍵鎖定成單鍵或雙鍵。此處的平均鍵級供繪圖，沒有估算各貢獻式的物理權重。
+
+H⁻ 與 O²⁻ 依單原子離子模型分別顯示一對、四對孤電子，能量欄留空。預覽與生成會拒絕超出支援電子組態的單原子輸入（例如 `[F-3]`）。回歸案例涵蓋預覽、SMILES 生成、連接圖重建、MOL 與專案讀回，以及重新套用幾何。
+
+### v1.3.0 查核基準（2026-11-10）
+
 查核開始時，`chemistry.py` 的 `_reject_high_domain_centers` 一律拒絕超過四電子域的中心，`_read` 拒絕所有自由基及中性 O2，元素清單亦缺 Be、Xe。因此 PF5、SF6、SF4、ClF3、XeF2、XeF4、BeCl2、O2、NO、NO2 等常見教學例子無法建立。原有拒絕是模型範圍限制，不代表這些物質不存在。
 
 可接受的修復路徑是：一般分子保留經驗力場；已知小分子使用有來源的參考幾何；特殊主族結構使用明確標示的理想 VSEPR 教學模板。不能單純移除防護，再把未經驗證的通用力場輸出當作正確答案。

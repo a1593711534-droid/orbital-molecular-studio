@@ -1,4 +1,4 @@
-# ORBITAL 私人網頁版 · 1.2.1
+# ORBITAL 私人網頁版 · 1.3.1
 
 本目錄是 Sites／Vinext 前端，使用與 Windows 版相同的 src 分子編輯器。
 

@@ -83,3 +83,9 @@ export function exampleMatches(example, query) {
   const normalized = normalizeSearch(query);
   return !normalized || [example.name,example.formula,example.smiles].some(value=>normalizeSearch(value).includes(normalized));
 }
+
+// Canvas labels and plain-text atom selectors use the same isotope notation.
+export function atomSymbol(atom) {
+  const mass = atom.isotope ? String(atom.isotope).replace(/\d/g, digit => '⁰¹²³⁴⁵⁶⁷⁸⁹'[digit]) : '';
+  return mass + atom.element;
+}

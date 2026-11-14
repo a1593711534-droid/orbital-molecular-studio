@@ -4,6 +4,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './scene.css';
 import { safePerpendicular, planeNormal, alignedPiOrbitals, electronicPresentation, displayedLonePairs } from './electronGeometry.js';
 import { createTapTracker } from './sceneInteraction.js';
+import { atomSymbol } from './chemistryExamples.js';
 
 const ELEMENTS = {
   H: { color: '#edf2f6', radius: .25, vdw: 1.20 },
@@ -319,7 +320,7 @@ const MoleculeScene = forwardRef(function MoleculeScene({
       const adding=pick.type==='atom'&&current.interactionMode==='build';
       renderer.domElement.style.cursor=adding?'copy':current.interactionMode==='select'||pick.type==='bond'?'pointer':'crosshair';
       const hovered=current.model?.atoms.find(a=>a.id===pick.id);
-      hint.textContent=adding?`＋ ${current.buildElement}`:pick.type==='bond'?'編輯化學鍵':`${hovered?.element||''}${pick.id+1}`;
+      hint.textContent=adding?`＋ ${current.buildElement}`:pick.type==='bond'?'編輯化學鍵':hovered?`${atomSymbol(hovered)}${pick.id+1}`:'';
       hint.style.left=`${Math.max(8,Math.min(rect.width-100,event.clientX-rect.left+16))}px`;
       hint.style.top=`${Math.max(8,Math.min(rect.height-40,event.clientY-rect.top-35))}px`;
       hint.style.display='block';
@@ -378,6 +379,9 @@ const MoleculeScene = forwardRef(function MoleculeScene({
     disposeGroup(r.group); r.resources.forEach((resource) => resource.dispose()); r.resources = []; r.pickables = []; r.pixelLabels = [];
     if (!model?.atoms?.length) { for (const name of ['aria-description','data-electronic-view','data-lone-pair-count','data-p-orbital-count']) r.renderer.domElement.removeAttribute(name); r.bounds.makeEmpty(); lastFit.current = null; return; }
     const positions = new Map(model.atoms.map((a) => [a.id, V(a.position)]));
+    // Center the scene alone. The inspector, MOL and XYZ retain the file frame.
+    const center = new THREE.Box3().setFromPoints([...positions.values()]).getCenter(new THREE.Vector3());
+    for (const point of positions.values()) point.sub(center);
     const atoms = new Map(model.atoms.map((a) => [a.id, a]));
     const neighbors = new Map(model.atoms.map((a) => [a.id, []]));
     model.bonds.forEach((b) => { neighbors.get(b.a)?.push(b.b); neighbors.get(b.b)?.push(b.a); });
@@ -407,9 +411,10 @@ const MoleculeScene = forwardRef(function MoleculeScene({
         halo.position.copy(mesh.position); halo.scale.setScalar(radius + .15); r.group.add(halo);
       }
       const formalCharge = presentation.charges.get(atom.id) || 0;
-      const displayCharge = electronicView === 'lewis' || !conjugatedAtoms.has(atom.id) ? chargeText(formalCharge) : '';
-      if (showLabels || selected.has(atom.id) || (electronicView === 'lewis' && formalCharge)) {
-        const text = showLabels || selected.has(atom.id) ? `${atom.element}${atom.id + 1}${displayCharge}` : `${atom.element}${displayCharge}`;
+      const displayCharge = electronicView === 'lewis' || (!conjugatedAtoms.has(atom.id) && !presentation.unresolvedAtoms.has(atom.id)) ? chargeText(formalCharge) : '';
+      if (showLabels || atom.isotope || selected.has(atom.id) || (electronicView === 'lewis' && formalCharge)) {
+        const number = showLabels || selected.has(atom.id) ? atom.id + 1 : '';
+        const text = `${atomSymbol(atom)}${number}${displayCharge}`;
         const label = labelSprite(text, { color: selected.has(atom.id) ? '#075d5b' : '#263448', selected: selected.has(atom.id) });
         label.userData.pixelLabel.anchor = mesh.position.clone();
         label.userData.pixelLabel.radius = radius;
@@ -452,10 +457,10 @@ const MoleculeScene = forwardRef(function MoleculeScene({
     const dotMaterial = new THREE.MeshBasicMaterial({ color: '#168f89' });
     r.resources.push(lpMaterial, dotMaterial);
     let displayedPairs = 0;
-    const orbitalAxes = showPi || showLonePairs ? alignedPiOrbitals(model.bonds, positions, neighbors, model.atoms) : [];
+    const orbitalAxes = showPi || showLonePairs ? alignedPiOrbitals(model.bonds, positions, neighbors, model.atoms, model.resonance?.linearPiCenter) : [];
     if (showLonePairs && !model.electronicState?.unpairedElectrons) for (const atom of model.atoms) {
       if (!visible(atom.id)) continue;
-      for (const pair of displayedLonePairs(atom, presentation.pairCounts.get(atom.id), electronicView, positions, neighbors, orbitalAxes)) {
+      for (const pair of displayedLonePairs(atom, presentation.pairCounts.get(atom.id), electronicView, positions, neighbors, orbitalAxes, presentation.equivalentOxygens.has(atom.id))) {
         const rawDirection = Array.isArray(pair) ? pair : pair.direction;
         if (!Array.isArray(rawDirection) || rawDirection.length !== 3) continue;
         const direction = V(rawDirection).normalize();
@@ -489,7 +494,7 @@ const MoleculeScene = forwardRef(function MoleculeScene({
     }
     // A localized closed-shell p picture cannot represent the spin occupancy
     // of O2 or the supported odd-electron reference molecules.
-    const piOrbitals = showPi && !model.electronicState?.unpairedElectrons ? orbitalAxes.filter(({atomId}) => visible(atomId)) : [];
+    const piOrbitals = showPi && !model.electronicState?.unpairedElectrons ? orbitalAxes.filter(({atomId}) => visible(atomId) && !presentation.unresolvedAtoms.has(atomId)) : [];
     const piSystems = (model.resonance?.groups || []).filter(group => Number.isFinite(group.piElectrons));
     const systemDescription = piSystems.map((group, index) => `π 系統 ${index + 1} 共 ${group.piElectrons} 個電子`).join('；');
     r.renderer.domElement.setAttribute('data-electronic-view', electronicView);

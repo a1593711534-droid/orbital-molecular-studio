@@ -70,7 +70,15 @@ function piBondNormals(bonds, positions, neighbors) {
 // Each p axis is geometric. Align its otherwise arbitrary sign across adjacent
 // parallel orbitals before choosing lobe colors; these are not calculated MOs.
 // Keeping separate orthogonal records also handles triple bonds and cumulenes.
-export function alignedPiOrbitals(bonds, positions, neighbors, atoms = []) {
+export function alignedPiOrbitals(bonds, positions, neighbors, atoms = [], linearPiCenter = null) {
+  if (Number.isInteger(linearPiCenter) && neighbors.get(linearPiCenter)?.length === 2) {
+    const ends = neighbors.get(linearPiCenter);
+    const axis = positions.get(ends[1]).clone().sub(positions.get(ends[0])).normalize();
+    const normal = safePerpendicular(axis);
+    const transverse = new THREE.Vector3().crossVectors(axis, normal).normalize();
+    return [ends[0], linearPiCenter, ends[1]].flatMap(atomId =>
+      [normal, transverse].map(direction => ({ atomId, direction: direction.clone() })));
+  }
   const records = [], byAtom = new Map();
   const normals = piBondNormals(bonds, positions, neighbors);
   for (const bond of bonds) {
@@ -149,24 +157,42 @@ export function electronicPresentation(model, view = 'hybrid', stateIndex = null
   const requested = stateIndex ?? model?.resonance?.inputFormStateIndex ?? 0;
   const state = states[Math.max(0, Math.min(states.length - 1, requested))];
   const hybridOrders = new Map();
+  const equivalentOxygens = new Set();
+  const unresolvedAtoms = new Set();
   if (view === 'hybrid') for (const group of model?.resonance?.equivalentBondGroups || []) {
+    if (group.basis === 'equivalent-terminal-oxygens') {
+      for (const id of group.atomIds) unresolvedAtoms.add(id);
+      for (const id of group.terminalAtomIds || []) equivalentOxygens.add(id);
+    }
     if (!Number.isFinite(group.order) || group.order <= 1 || group.order >= 3) continue;
     for (const id of group.bondIds || []) hybridOrders.set(id, group.order);
   }
   const charges = new Map(), pairCounts = new Map(), bondOrders = new Map();
+  const linearPiBackbone = Number.isInteger(model?.resonance?.linearPiCenter);
   for (const atom of model?.atoms || []) {
     charges.set(atom.id, view === 'lewis' && Number.isFinite(state?.atomCharges?.[atom.id]) ? state.atomCharges[atom.id] : atom.charge);
     pairCounts.set(atom.id, view === 'lewis' && Number.isFinite(state?.lonePairCounts?.[atom.id]) ? state.lonePairCounts[atom.id] : (atom.lonePairs || []).length);
   }
   for (const bond of model?.bonds || []) {
     const lewisOrder = state?.bondOrders?.[bond.id];
-    const order = view === 'lewis' && Number.isFinite(lewisOrder) ? lewisOrder : hybridOrders.get(bond.id) ?? (bond.aromatic ? 1.5 : bond.order);
+    const hybridOrder = linearPiBackbone ? 1 : hybridOrders.get(bond.id) ?? (bond.aromatic ? 1.5 : bond.order);
+    const order = view === 'lewis' && Number.isFinite(lewisOrder) ? lewisOrder : hybridOrder;
     bondOrders.set(bond.id, order);
   }
-  return { charges, pairCounts, bondOrders, hybridOrders };
+  return { charges, pairCounts, bondOrders, hybridOrders, equivalentOxygens, unresolvedAtoms };
 }
 
-export function displayedLonePairs(atom, count, view, positions, neighbors, piOrbitals = []) {
+export function displayedLonePairs(atom, count, view, positions, neighbors, piOrbitals = [], equivalentOxygen = false) {
+  if (view === 'hybrid' && equivalentOxygen) {
+    // A double-bonded terminal O has two Lewis lone pairs, a single-bonded
+    // O− three. Draw the common two without choosing a localized double bond.
+    const center = neighbors.get(atom.id)[0];
+    const outward = positions.get(atom.id).clone().sub(positions.get(center)).normalize();
+    const normal = planeNormal(atom.id, center, positions, neighbors);
+    const side = new THREE.Vector3().crossVectors(outward, normal).normalize();
+    return [-1, 1].map(sign => ({kind:'localized', direction:
+      outward.clone().multiplyScalar(.5).addScaledVector(side, sign * Math.sqrt(3) / 2).toArray()}));
+  }
   const pairs = (atom.lonePairs || []).filter(pair => Array.isArray(pair.direction) && pair.direction.length === 3 && pair.direction.every(Number.isFinite)).map(pair => ({ ...pair, direction: [...pair.direction] }));
   const localPairs = pairs.filter(pair => pair.kind !== 'delocalized');
   const axes = piOrbitals.filter(orbital => orbital.atomId === atom.id);
@@ -188,6 +214,12 @@ export function displayedLonePairs(atom, count, view, positions, neighbors, piOr
   const local = pairs.filter(pair => pair.kind !== 'delocalized');
   const donor = pairs.filter(pair => pair.kind === 'delocalized');
   const result = [...local, ...donor].slice(0, count);
+  for (const {direction} of axes) {
+    if (result.length >= count) break;
+    if (!result.some(pair => Math.abs(direction.dot(new THREE.Vector3(...pair.direction))) > .94)) {
+      result.push({kind: 'delocalized', direction: direction.toArray()});
+    }
+  }
   if (result.length < count) {
     const neighbor = (neighbors.get(atom.id) || [])[0];
     const direction = neighbor === undefined ? new THREE.Vector3(0, 0, 1) : planeNormal(atom.id, neighbor, positions, neighbors);

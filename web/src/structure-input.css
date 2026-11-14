@@ -115,8 +115,9 @@
 @media(max-width:760px) and (min-height:600px) {
   .si-workspace { grid-template-rows:minmax(160px,1fr) minmax(160px,34%); overflow:hidden; }
   .si-editor { overflow-y:auto; overscroll-behavior:contain; }
-  .si-preview { min-height:0; padding:10px 16px; }
-  .si-preview-heading,.si-preview-note { display:none; }
+  .si-preview { min-height:0; padding:10px 16px; overflow-y:auto; }
+  .si-preview-heading,.si-preview-note:not(.si-model-warning) { display:none; }
+  .si-model-warning { flex-shrink:0; margin:4px 0; }
   .si-preview-image { min-height:0; }
   .si-svg,.si-svg svg { height:100%; max-height:100%; }
   .si-preview-status { margin-top:6px; flex-shrink:0; }

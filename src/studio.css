@@ -256,3 +256,12 @@ summary::-webkit-details-marker{display:none}
 .mode-select .electron-legend{bottom:78px}
 @media(pointer:coarse) and (min-width:901px){.scene-gesture{display:block}.stage-bottom{justify-content:space-between}}
 .extra-elements{max-height:min(420px,55dvh);overflow-y:auto}
+.build-draft { width:min(420px,calc(100% - 24px)); max-height:85dvh; overflow:auto; margin:auto; padding:22px; border:1px solid #cbdad1; background:#fff; color:#203a30; border-radius:14px; }
+.build-draft::backdrop { background:#15292173; }
+.build-draft h2 { margin:0 0 12px; }
+.build-draft label { display:grid; grid-template-columns:1fr 1.5fr; align-items:center; gap:12px; margin:10px 0; }
+.build-draft select { min-width:0; padding:7px; font:inherit; }
+.draft-actions { display:flex; justify-content:space-between; gap:8px; margin-top:8px; }
+.draft-bonds { overflow-wrap:anywhere; }
+.save-failed,.draft-error { color:#a13425; }
+.save-failed { margin-left:8px; }

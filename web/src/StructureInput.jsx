@@ -102,7 +102,7 @@ export default function StructureInput({initialValue='',busy=false,hosted=false,
 
   useEffect(()=>{
     const end=(initialValue||'').length;
-    textarea.current?.focus();textarea.current?.setSelectionRange(end,end);
+    textarea.current?.setSelectionRange(end,end);
   },[]);
 
   useEffect(()=>{
@@ -232,7 +232,7 @@ export default function StructureInput({initialValue='',busy=false,hosted=false,
         {waitingForCloud?<div className="si-preview-status" role="status"><span>{connectionText}</span>{retryConnectionButton}</div>:<div className={'si-preview-status '+previewState} role="status" aria-live="polite">
           {previewState==='checking'?<><LoaderCircle className="si-spin" size={18}/><span>即時驗證中</span></>:previewState==='valid'?<><Check size={18}/><span><b><Formula value={preview?.displayFormula||preview?.formula} parts={preview?.formulaParts} charge={preview?.charge}/></b><small>{preview?.atomCountIncludesHydrogen?'含氫共 ':''}{preview?.atomCount} 原子 · {preview?.bondCount} 化學鍵</small></span></>:previewState==='empty'?<><ArrowRight size={18}/><span>加入原子後，預覽會自動更新</span></>:<><span className="si-status-dot"/><span>{preview?.message||'請檢查輸入的連接方式。'}</span>{previewState==='error'&&<button type="button" className="si-icon-button" aria-label="重試結構預覽" title="重試預覽" onClick={()=>setRetry(n=>n+1)}><RotateCcw size={18}/></button>}</>}
         </div>}
-        {!waitingForCloud&&previewState==='valid'&&<><p className="si-preview-note">數字對應輸入中的原子。生成後可在 3D 畫面繼續編輯。</p>{preview?.warnings?.map((warning,index)=><p className="si-preview-note" key={index}>{warning}</p>)}</>}
+        {!waitingForCloud&&previewState==='valid'&&<><p className="si-preview-note">數字對應輸入中的原子。生成後可在 3D 畫面繼續編輯。</p>{preview?.warnings?.map((warning,index)=><p className="si-preview-note si-model-warning" key={index}>{warning}</p>)}</>}
       </aside>
     </div>
     <footer className="si-footer"><span className={submitError?'si-submit-error':''} role={submitError?'alert':undefined}>{submitError||'輸入時不會變更目前模型'}</span><button type="button" className="si-generate" onClick={generate} disabled={!canGenerate}>{inputBusy?<LoaderCircle size={18} className="si-spin"/>:<Sparkles size={18}/>}生成三維結構<ArrowRight size={18}/></button></footer>

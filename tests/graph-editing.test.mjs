@@ -1,6 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {editableBond, replaceAtom, touchGraph} from '../src/graphEditing.js';
+import {appendGraphAtom, editableBond, replaceAtom, touchGraph} from '../src/graphEditing.js';
+
+test('changing just the hydrogen policy preserves tetrahedral and alkene descriptors', () => {
+  const graph={atoms:[{id:0,element:'C',charge:0,chiralTag:2,explicitHs:1,noImplicit:true}],
+    bonds:[{a:0,b:1,stereo:3,stereoAtoms:[2,3],bondDir:4}]};
+  const bonds=structuredClone(graph.bonds);
+  replaceAtom(graph,0,'C',0,'auto');
+  assert.equal(graph.atoms[0].chiralTag,2);
+  assert.deepEqual(graph.bonds,bonds);
+  assert.equal(graph.atoms[0].noImplicit,false);
+  replaceAtom(graph,0,'C',0,'1');
+  assert.equal(graph.atoms[0].chiralTag,2);
+  assert.deepEqual(graph.bonds,bonds);
+});
+
+test('a new draft bond preserves the last validated graph and supports noncontiguous IDs', () => {
+  const saved={atoms:[{id:2,element:'P'},{id:4,element:'F'}],bonds:[{a:2,b:4,order:1}]};
+  const before=structuredClone(saved);
+  const draft=appendGraphAtom(saved,2,'F',1);
+  assert.deepEqual(saved,before);
+  assert.deepEqual(draft.atoms.at(-1),{id:5,element:'F',charge:0});
+  assert.deepEqual(draft.bonds.at(-1),{a:2,b:5,order:1});
+  assert.throws(()=>appendGraphAtom(saved,99,'F',1),/連接原子/);
+});
 
 test('replacing labelled carbon does not create an unintended isotope of another element', () => {
   const graph = {atoms:[{id:7,element:'C',isotope:13,charge:0,explicitHs:4,noImplicit:true}],bonds:[]};

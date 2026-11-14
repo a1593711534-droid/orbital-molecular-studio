@@ -101,12 +101,12 @@ class EducationalGeometryTests(unittest.TestCase):
     def test_import_preserves_coordinates_and_assigns_lone_pairs_after_permutation(self):
         model = generate("FS(F)(F)F")
         mol = Chem.MolFromMolBlock(model["molblock"], removeHs=False, sanitize=False)
-        pos = np.array(mol.GetConformer().GetPositions())
+        pos = np.array(mol.GetConformer().GetPositions()) + [12., -6., 3.]
         pos[[0,4]] = pos[[4,0]]  # exchange an axial and an equatorial F coordinate
         for i,p in enumerate(pos):
             mol.GetConformer().SetAtomPosition(i,Point3D(*map(float,p)))
         result = process({"action":"analyze","molblock":Chem.MolToMolBlock(mol)})
-        np.testing.assert_allclose([a["position"] for a in result["atoms"]], pos-pos.mean(axis=0), atol=.0002)
+        np.testing.assert_allclose([a["position"] for a in result["atoms"]], pos, atol=.0001)
         self.assertEqual(result["geometrySource"]["type"], "imported")
         center = result["atoms"][1]
         lp = np.asarray(center["lonePairs"][0]["direction"])

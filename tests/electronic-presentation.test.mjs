@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { electronicPresentation, displayedLonePairs } from '../src/electronGeometry.js';
+import { alignedPiOrbitals, electronicPresentation, displayedLonePairs } from '../src/electronGeometry.js';
 import { createTapTracker } from '../src/sceneInteraction.js';
 
 const pair = (direction, kind = 'localized') => ({ direction, kind });
@@ -66,6 +66,53 @@ test('unequal carboxylic-acid C=O and C-O bonds are not made equivalent just bec
 test('partial bonds support nitrate 4/3 drawing order, not only 1.5', () => {
   const model=ozone(); model.resonance.equivalentBondGroups[0].order=4/3;
   assert.deepEqual([...electronicPresentation(model).bondOrders.values()],[4/3,4/3]);
+});
+
+test('linear N₂O uses two transverse p axes on every atom independently of the input contributor', () => {
+  const center = 1;
+  const model = {
+    atoms: [-1.1282, 0, 1.1842].map((x, id) => ({id, position: [x, 0, 0], lonePairs: []})),
+    bonds: [{id: 0, a: 0, b: 1, order: 3}, {id: 1, a: 1, b: 2, order: 1}],
+    resonance: {linearPiCenter: center, states: [{bondOrders: [3, 1]}, {bondOrders: [2, 2]}, {bondOrders: [1, 3]}]},
+  };
+  const {positions, neighbors} = geometry(model);
+  for (const [index, state] of model.resonance.states.entries()) {
+    model.bonds.forEach(b => { b.order = state.bondOrders[b.id]; });
+    assert.deepEqual([...electronicPresentation(model).bondOrders.values()], [1, 1]);
+    assert.deepEqual([...electronicPresentation(model, 'lewis', index).bondOrders.values()], state.bondOrders);
+    const axes = alignedPiOrbitals(model.bonds, positions, neighbors, model.atoms, center);
+    for (const atom of model.atoms) {
+      const [a, b] = axes.filter(axis => axis.atomId === atom.id);
+      assert.ok(Math.abs(a.direction.x) < 1e-8 && Math.abs(b.direction.x) < 1e-8);
+      assert.ok(Math.abs(a.direction.dot(b.direction)) < 1e-8);
+    }
+    const terminus = {id: 0, lonePairs: [pair([-1, 0, 0])]};
+    assert.equal(displayedLonePairs(terminus, 3, 'lewis', positions, neighbors, axes).length, 3);
+  }
+});
+
+test('SO₂ and sulfate hybrid glyphs use only pairs common to equivalent terminal oxygens', () => {
+  const model = {
+    atoms: [{id: 0, position: [-1, 1, 0]}, {id: 1, position: [0, 0, 0]}, {id: 2, position: [1, 1, 0]}],
+    bonds: [{id: 0, a: 0, b: 1, order: 1}, {id: 1, a: 1, b: 2, order: 2}],
+    resonance: {equivalentBondGroups: [{basis: 'equivalent-terminal-oxygens', atomIds: [0,1,2],
+      terminalAtomIds: [0,2], bondIds: [0,1], order: 1.5}]},
+  };
+  const {positions, neighbors} = geometry(model);
+  const hybrid = electronicPresentation(model);
+  assert.deepEqual([...hybrid.equivalentOxygens], [0, 2]);
+  assert.deepEqual([...hybrid.unresolvedAtoms], [0, 1, 2]);
+  for (const id of hybrid.equivalentOxygens) {
+    const atom = model.atoms[id];
+    const glyphs = () => displayedLonePairs(atom, null, 'hybrid', positions, neighbors, [], true);
+    atom.lonePairs = [pair([0,0,1]), pair([0,1,0])];
+    const expected = glyphs();
+    atom.lonePairs.push(pair([0,-1,0]));
+    assert.equal(expected.length, 2);
+    assert.deepEqual(glyphs(), expected);
+    assert.equal(displayedLonePairs(atom, 3, 'lewis', positions, neighbors).length, 3);
+  }
+  assert.equal(electronicPresentation(model, 'lewis').unresolvedAtoms.size, 0);
 });
 
 test('local lone pairs remain available without resonance metadata and malformed directions are rejected', () => {

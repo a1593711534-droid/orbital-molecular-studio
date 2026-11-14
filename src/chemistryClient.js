@@ -98,7 +98,11 @@ export async function chemistryRequest(payload, {signal, hosted=false}={}) {
       failure.message+=' 請重新連線後再次提交。';
       throw failure;
     }
-    if(!response.ok||data.error)throw new Error(typeof data.error==='string'?data.error:statusMessage||'計算未完成');
+    if(!response.ok||data.error){
+      const error = new Error(typeof data.error==='string'?data.error:statusMessage||'計算未完成');
+      error.status = response.status;
+      throw error;
+    }
     if(controller.signal.aborted)throw new DOMException('Cancelled','AbortError');
     rememberPreview(key,data);
     return data;

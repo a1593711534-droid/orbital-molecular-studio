@@ -22,8 +22,9 @@ SUPPORTED = {"H", "Be", "B", "C", "N", "O", "F", "Na", "Mg", "Al", "Si", "P", "S
 VALENCE_ELECTRONS = {"H": 1, "B": 3, "C": 4, "N": 5, "O": 6, "F": 7,
                      "Si": 4, "P": 5, "S": 6, "Cl": 7, "Br": 7, "I": 7,
                      "Be": 2, "Xe": 8, "Na": 1, "Mg": 2, "Al": 3, "K": 1, "Ca": 2}
-ION_CHARGES = {"H": 1, "Na": 1, "K": 1, "Mg": 2, "Ca": 2, "Al": 3,
-               "F": -1, "Cl": -1, "Br": -1, "I": -1}
+ISOLATED_IONS = {("H", 1), ("H", -1), ("Na", 1), ("K", 1), ("Mg", 2),
+                 ("Ca", 2), ("Al", 3), ("N", -3), ("O", -2), ("S", -2),
+                 ("F", -1), ("Cl", -1), ("Br", -1), ("I", -1)}
 VSEPR_REFERENCE_URL = "https://openstax.org/books/chemistry-2e/pages/7-6-molecular-structure-and-polarity"
 BOND_TYPES = {1: Chem.BondType.SINGLE, 1.5: Chem.BondType.AROMATIC,
               2: Chem.BondType.DOUBLE, 3: Chem.BondType.TRIPLE}
@@ -78,8 +79,11 @@ def _teaching_spec(mol):
     if len(ligands) == 1 and (symbol, next(iter(ligands)), degree) in halides:
         if all(a.GetFormalCharge() == 0 for a in mol.GetAtoms()) and all(order == 1 for order in orders):
             pairs = halides[(symbol, next(iter(ligands)), degree)]
+    if (symbol == "C" and center.GetFormalCharge() == -1 and degree == 3 and ligands == {"H"}
+            and all(a.GetFormalCharge() == 0 for a in ends) and all(order == 1 for order in orders)):
+        pairs = 1
     oxyanions = {("C", 3, -2): 0, ("N", 3, -1): 0, ("S", 3, 0): 0, ("S", 3, -2): 1,
-                 ("S", 4, -2): 0, ("P", 4, -3): 0}
+                 ("S", 4, -2): 0, ("P", 4, -3): 0, ("Cl", 3, -1): 1, ("Br", 3, -1): 1}
     oxy_key = (symbol, degree, sum(a.GetFormalCharge() for a in mol.GetAtoms()))
     if ligands == {"O"} and oxy_key in oxyanions:
         if all((mol.GetBondBetweenAtoms(center.GetIdx(), a.GetIdx()).GetBondTypeAsDouble(), a.GetFormalCharge()) in {(1., -1), (2., 0)} for a in ends):
@@ -125,9 +129,27 @@ def _reference_spec(mol):
                     "measurement": "氣相光電子光譜推估 C–N 為 1.177 ± 0.004 Å。"}
     if len(symbols) == 3 and mol.GetNumBonds() == 2:
         center = next((a for a in mol.GetAtoms() if a.GetDegree() == 2), None)
-        if center is None or any(a.GetSymbol() != "O" for a in center.GetNeighbors()):
+        if center is None:
             return None
-        if center.GetSymbol() == "N" and orders == [1., 2.] and center.GetFormalCharge() == 1 and charges == [-1, 0, 1]:
+        ends = {a.GetSymbol(): a for a in center.GetNeighbors()}
+        if center.GetSymbol() == "C" and set(ends) == {"S"} and orders == [2., 2.] and charges == [0, 0, 0]:
+            return {**common, "name": "CS₂", "center": center.GetIdx(), "length": 1.554, "angle": 180., "cas": "75150"}
+        if center.GetSymbol() == "N" and set(ends) == {"N", "O"} and center.GetFormalCharge() == 1:
+            # Check the octet of each named terminus, including the minor N–N≡O contributor.
+            if all(a.GetFormalCharge() == a.GetBonds()[0].GetBondTypeAsDouble() - (3 if s == "N" else 2)
+                   for s, a in ends.items()) and sum(orders) == 4:
+                return {**common, "name": "N₂O", "center": center.GetIdx(), "lengths": {"N": 1.1282, "O": 1.1842},
+                        "angle": 180., "cas": "10024972"}
+        if set(ends) != {"O"}:
+            return None
+        if center.GetSymbol() == "Cl" and set(orders) <= {1., 2.} and sum(charges) == -1 and all(
+                a.GetFormalCharge() == a.GetBonds()[0].GetBondTypeAsDouble()-2 for a in center.GetNeighbors()):
+            return {**common, "name": "ClO₂⁻", "center": center.GetIdx(), "length": 1.567, "angle": 116.5,
+                    "referenceUrl": "https://doi.org/10.1016/j.cplett.2007.10.018",
+                    "measurement": "氣相光電子光譜的 Franck–Condon 分析推估 Cl–O 為 1.567 ± 0.002 Å，O–Cl–O 為 116.5 ± 0.5°。"}
+        if center.GetSymbol() == "N" and orders == [1., 2.] and (
+                (center.GetFormalCharge() == 1 and charges == [-1, 0, 1]) or
+                (charges == [0, 0, 0] and sum(a.GetNumRadicalElectrons() for a in mol.GetAtoms()) == 1)):
             return {**common, "name": "NO₂", "center": center.GetIdx(), "length": 1.193, "angle": 134.1, "cas": "10102440", "multiplicity": 2, "unpaired": 1}
         if center.GetSymbol() == "N" and orders == [1., 2.] and center.GetFormalCharge() == 0 and charges == [-1, 0, 0]:
             return {**common, "name": "NO₂⁻", "center": center.GetIdx(), "length": 1.25, "angle": 117.5,
@@ -140,8 +162,7 @@ def _reference_spec(mol):
 
 def _is_isolated_ion(mol):
     return (mol.GetNumAtoms() == 1 and mol.GetNumBonds() == 0
-            and (a := mol.GetAtomWithIdx(0)).GetSymbol() in ION_CHARGES
-            and a.GetFormalCharge() == ION_CHARGES[a.GetSymbol()]
+            and ((a := mol.GetAtomWithIdx(0)).GetSymbol(), a.GetFormalCharge()) in ISOLATED_IONS
             and a.GetNumExplicitHs() == 0)
 
 
@@ -187,7 +208,8 @@ def _educational_model(mol, preserve=False):
                 ends = [a.GetIdx() for a in mol.GetAtomWithIdx(c).GetNeighbors()]
                 half = math.radians(spec["angle"] / 2)
                 for i, sign in zip(ends, [1, -1]):
-                    coords[i] = spec["length"] * np.array([sign*math.sin(half), math.cos(half), 0.])
+                    length = spec["lengths"][mol.GetAtomWithIdx(i).GetSymbol()] if "lengths" in spec else spec["length"]
+                    coords[i] = length * np.array([sign*math.sin(half), math.cos(half), 0.])
         mol.RemoveAllConformers()
         conf = Chem.Conformer(mol.GetNumAtoms())
         conf.Set3D(True)
@@ -207,6 +229,12 @@ def _educational_model(mol, preserve=False):
             note += "此為氣相 PCl₅ 分子示意；固態可形成離子結構。"
         metadata = {key: spec[key] for key in ["type", "model", "shape", "electronGeometry"]}
         metadata.update({"referenceUrl": VSEPR_REFERENCE_URL, "bondLengthModel": "covalent-radius-sum-display-scale", "energyAvailable": False})
+        if mol.GetAtomWithIdx(spec["center"]).GetSymbol() == "C" and spec["model"] == "AX3E":
+            metadata["referenceUrl"] = "https://doi.org/10.1021/jacs.5b07013"
+            note += "甲基負離子的氣相光電子光譜支持三角錐形。"
+        if mol.GetAtomWithIdx(spec["center"]).GetSymbol() in {"Cl", "Br"} and spec["model"] == "AX3E":
+            metadata["referenceUrl"] = "https://doi.org/10.1103/PhysRev.51.235"
+            note += "氯酸根與溴酸根的溶液振動光譜支持三角錐形。"
     else:
         if "cas" in spec:
             method = "NIST 氣相參考幾何 · " + spec["name"]
@@ -216,8 +244,11 @@ def _educational_model(mol, preserve=False):
             method = "氣相光電子光譜參考幾何 · " + spec["name"]
             note, url = spec["measurement"], spec["referenceUrl"]
         note += "此模型使用參考座標，不提供力場能量。"
-        metadata = {"type": spec["type"], "referenceUrl": url,
-                    "referenceBondLength": spec["length"], "energyAvailable": False}
+        metadata = {"type": spec["type"], "referenceUrl": url, "energyAvailable": False}
+        if "lengths" in spec:
+            metadata["referenceBondLengths"] = spec["lengths"]
+        else:
+            metadata["referenceBondLength"] = spec["length"]
         if "angle" in spec:
             metadata["referenceBondAngle"] = spec["angle"]
         if any(a.GetIsotope() for a in mol.GetAtoms()):
@@ -427,6 +458,8 @@ def _inspect(payload):
             svg = svg.replace("</svg>", "".join(notes) + "</svg>")
         special = _teaching_spec(checked) or _reference_spec(checked)
         notes = ["此為二維連接圖；三維幾何需生成後確認。"]
+        if checked.HasProp("_IgnoredStereo"):
+            notes.append(checked.GetProp("_IgnoredStereo"))
         if special and special["type"] == "idealized-vsepr":
             notes.append("三維模型使用理想 VSEPR 示意；角度與鍵長不是實驗值，亦不提供力場能量。")
         if special and special.get("unpaired"):
@@ -610,11 +643,15 @@ def _read_graph(graph):
         atom.SetNumExplicitHs(hydrogens)
         atom.SetNoImplicit(bool(data.get("noImplicit", False)))
         tag = int(data.get("chiralTag", 0))
-        if tag in Chem.ChiralType.values:
-            atom.SetChiralTag(Chem.ChiralType.values[tag])
+        if tag not in {int(Chem.ChiralType.CHI_UNSPECIFIED), int(Chem.ChiralType.CHI_TETRAHEDRAL_CW),
+                       int(Chem.ChiralType.CHI_TETRAHEDRAL_CCW)}:
+            raise ChemistryError("此版本僅支援四面體原子立體化學；無法可靠保留其他原子立體標記。")
+        atom.SetChiralTag(Chem.ChiralType.values[tag])
         mapping[old_id] = rw.AddAtom(atom)
     seen = set()
     for data in bonds:
+        if int(data.get("stereo", 0)) in {int(Chem.BondStereo.STEREOATROPCW), int(Chem.BondStereo.STEREOATROPCCW)}:
+            raise ChemistryError("此工作室尚不能保留聯芳基等鍵的軸立體標記，請使用支援軸立體化學的編輯器。")
         try:
             a, b = mapping[data["a"]], mapping[data["b"]]
             order = float(data.get("order", 1))
@@ -648,6 +685,7 @@ def _read_graph(graph):
 
 
 def _read(payload):
+    requested_atoms, directed_bonds = [], []
     with rdBase.BlockLogs():
         try:
             if payload.get("graph") is not None:
@@ -660,6 +698,10 @@ def _read(payload):
                     raise ChemistryError("請輸入有效的 SMILES，或先建立分子連接圖。")
                 _validate_smiles_atom_numbers(smiles)
                 mol = Chem.MolFromSmiles(smiles, sanitize=False)
+                if mol is not None:
+                    requested_atoms = [a.GetIdx() for a in mol.GetAtoms() if a.GetChiralTag() != Chem.ChiralType.CHI_UNSPECIFIED]
+                    directed_bonds = [b.GetIdx() for b in mol.GetBonds()
+                                      if b.GetBondDir() in {Chem.BondDir.ENDDOWNRIGHT, Chem.BondDir.ENDUPRIGHT}]
             if mol is None:
                 raise ChemistryError("無法解析結構：請檢查 SMILES、價數、環閉合與立體化學標記。")
             _reject_high_domain_centers(mol)
@@ -682,18 +724,26 @@ def _read(payload):
         if atom.GetIsotope() and Chem.GetPeriodicTable().GetMassForIsotope(atom.GetAtomicNum(), atom.GetIsotope()) <= 0:
             raise ChemistryError(f"原子 {atom.GetIdx()+1} 的同位素質量數沒有可用資料；請確認同位素標記。")
         if atom.GetChiralTag() not in {Chem.ChiralType.CHI_UNSPECIFIED, Chem.ChiralType.CHI_TETRAHEDRAL_CW, Chem.ChiralType.CHI_TETRAHEDRAL_CCW}:
-            # A molfile reader infers TBP/OH/SP tags from ideal coordinates
-            # even when every ligand is identical and no stereoisomer exists.
+            # RDKit marks coordinate-inferred tags separately from file tags.
+            # A template project keeps its requested scope in stereoGraph.
             spec = _teaching_spec(mol)
-            if payload.get("molblock") and spec and atom.GetIdx() == spec["center"] and len({(n.GetSymbol(), n.GetIsotope()) for n in atom.GetNeighbors()}) == 1:
+            if (payload.get("molblock") and spec and atom.GetIdx() == spec["center"]
+                    and atom.HasProp("_NonExplicit3DChirality")
+                    and (payload.get("stereoGraph") is not None
+                         or len({(n.GetSymbol(), n.GetIsotope()) for n in atom.GetNeighbors()}) == 1)):
                 atom.SetChiralTag(Chem.ChiralType.CHI_UNSPECIFIED)
+                atom.ClearProp("_chiralPermutation")
                 continue
             raise ChemistryError("此版本僅支援四面體原子立體化學；無法可靠保留其他原子立體標記。")
+    if any(b.GetStereo() in {Chem.BondStereo.STEREOATROPCW, Chem.BondStereo.STEREOATROPCCW} for b in mol.GetBonds()):
+        raise ChemistryError("此工作室尚不能保留聯芳基等鍵的軸立體標記，請使用支援軸立體化學的編輯器。")
     if any(b.GetBondType() not in BOND_TYPES.values() for b in mol.GetBonds()):
         raise ChemistryError("此版本僅支援單鍵、雙鍵、三鍵與芳香鍵；配位鍵或未指定鍵級尚未有可靠的幾何及電子計數模型。")
     if any(group.GetGroupType() != Chem.StereoGroupType.STEREO_ABSOLUTE for group in mol.GetStereoGroups()):
         raise ChemistryError("此檔案含相對或混合立體化學（AND／OR 群組）；單一構型工作室無法完整表示，請先明確指定要檢視的異構物。")
     mol = Chem.AddHs(mol, addCoords=bool(mol.GetNumConformers()))
+    if mol.GetNumAtoms() == 1 and Chem.GetFormalCharge(mol) and not _is_isolated_ion(mol):
+        raise ChemistryError("此單原子離子的電荷或電子組態不在可表示的 Lewis 教學模型內。")
     radical_count = sum(a.GetNumRadicalElectrons() for a in mol.GetAtoms())
     if radical_count:
         reference = _reference_spec(mol)
@@ -708,10 +758,32 @@ def _read(payload):
     if mol.GetNumAtoms() > 200:
         raise ChemistryError("補氫後超過 200 個原子，請縮小結構。")
     Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+    ignored_atoms = [str(i + 1) for i in requested_atoms if mol.GetAtomWithIdx(i).GetChiralTag() == Chem.ChiralType.CHI_UNSPECIFIED]
+    # RDKit can retain a slash on an isolated single bond even when it
+    # contributes no configuration to the sanitized molecule (e.g. C/C).
+    directional_centers = {index for bond in mol.GetBonds()
+                           if bond.GetBondType() == Chem.BondType.DOUBLE
+                           and bond.GetStereo() not in {Chem.BondStereo.STEREONONE, Chem.BondStereo.STEREOANY}
+                           for index in (bond.GetBeginAtomIdx(), bond.GetEndAtomIdx())}
+    ignored_directions = []
+    for i in directed_bonds:
+        bond = mol.GetBondWithIdx(i)
+        if bond.GetBondDir() == Chem.BondDir.NONE or not directional_centers.intersection(
+                (bond.GetBeginAtomIdx(), bond.GetEndAtomIdx())):
+            ignored_directions.append(str(i + 1))
+    notices = []
+    if ignored_atoms:
+        notices.append("原子 " + "、".join(ignored_atoms) + " 的手性標記已忽略，未形成可指定的立體中心。")
+    if ignored_directions:
+        notices.append("鍵 " + "、".join(ignored_directions) + " 的斜線標記已忽略，未形成可區分且完整指定的 E/Z 構型。")
+    if notices:
+        mol.SetProp("_IgnoredStereo", " ".join(notices))
     if payload.get("molblock") and payload.get("stereoGraph") is not None:
         _restore_stereo_scope(mol, payload["stereoGraph"])
     elif payload.get("molblock") and Chem.FindPotentialStereo(mol):
         mol.SetBoolProp("_StereoFromImport", True)
+    if payload.get("molblock"):
+        mol.SetBoolProp("_InputCoordinateFrame", True)
     return mol
 
 
@@ -746,6 +818,16 @@ def _rotation_info(mol, bond):
         return False, "末端氫鍵沒有可操作的內部扭轉自由度。"
     if bond.GetBeginAtom().GetDegree() < 2 or bond.GetEndAtom().GetDegree() < 2:
         return False, "末端原子沒有可操作的內部扭轉自由度。"
+    # A chain of degree-two sp atoms remains on the axis until a branch is
+    # encountered. Follow the entire chain (2-butyne has methyl H on both
+    # sides), independent of tiny numerical deviations from linearity.
+    for endpoint, other in [(bond.GetBeginAtom(), bond.GetEndAtom()), (bond.GetEndAtom(), bond.GetBeginAtom())]:
+        atom, previous = endpoint, other.GetIdx()
+        while atom.GetDegree() == 2 and atom.GetHybridization() == Chem.HybridizationType.SP:
+            neighbor = next(n for n in atom.GetNeighbors() if n.GetIdx() != previous)
+            previous, atom = atom.GetIdx(), neighbor
+        if atom.GetDegree() == 1:
+            return False, "此鍵的一側只有共線的原子，沒有可改變的內部扭轉角。"
     if bond.GetIsConjugated():
         return True, "共軛單鍵可扭轉，但具共軛能障；旋轉後能量會重新計算，不等於自由旋轉。"
     return True, "σ 單鍵可調整扭轉角；空間排斥與扭轉勢壘仍影響能量。"
@@ -805,7 +887,10 @@ def _double_bond_control(mol, bond, potential, descriptors):
     candidate.SetStereoAtoms(*refs)
     candidate.SetStereo(Chem.BondStereo.STEREOCIS)
     try:
-        trial_label = _true_cip(trial)[1].get(bond.GetIdx())
+        candidate.ClearProp("_CIPCode")
+        candidate.ClearProp("_CIPNeighborOrder")
+        rdCIPLabeler.AssignCIPLabels(trial, bondsToLabel=[bond.GetIdx()], atomsToLabel=[], maxRecursiveIterations=200000)
+        trial_label = candidate.GetProp("_CIPCode") if candidate.HasProp("_CIPCode") else None
     except Exception:
         trial_label = None
     if trial_label not in {"E", "Z"}:
@@ -818,23 +903,9 @@ def _double_bond_control(mol, bond, potential, descriptors):
     control["reason"] = ("兩端各有一個氫：Z 對應順式，E 對應反式。設定後重新生成幾何，並保留 π 鍵旋轉鎖定。"
                          if control["cisTrans"] else
                          "依 CIP 優先序指定：Z 為高優先序取代基同側，E 為異側；不直接等同所有結構的順／反命名。")
-    # Only expose reference atom IDs when priority is obvious from atomic
-    # number/isotope. Deeper sequence-rule cases are labeled by true CIP above,
-    # without presenting legacy ranks as if they were authoritative.
-    reference = []
-    periodic_table = Chem.GetPeriodicTable()
-    def immediate_priority(atom):
-        number = atom.GetAtomicNum()
-        return number, atom.GetIsotope() or periodic_table.GetMostCommonIsotope(number)
-    for side in neighbors:
-        ranked = sorted(side, key=immediate_priority)
-        if len(ranked) > 1:
-            left, right = ranked[-2:]
-            if immediate_priority(left) == immediate_priority(right):
-                reference = []
-                break
-        reference.append(ranked[-1].GetIdx())
-    if len(reference) == 2:
+    # The CIP labeler also records the actual high-priority ligand on each end.
+    reference = list(candidate.GetPropsAsDict(includePrivate=True).get("_CIPNeighborOrder", []))
+    if len(reference) == 2 and all(any(n.GetIdx() == i for n in side) for i, side in zip(reference, neighbors)):
         control["referenceAtoms"] = reference
     return control
 
@@ -967,6 +1038,16 @@ def _lone_pairs(mol, atom, kekule, positions):
     if count == 0:
         return []
     count = min(count, 4)
+    reference = _reference_spec(mol)
+    if reference and reference["name"] == "N₂O":
+        # One sigma lone pair at each terminus. The remaining Lewis lone pairs
+        # belong to transverse p axes and must not be counted a second time.
+        axis = _unit(positions[i] - positions[reference["center"]])
+        first = _perp(axis)
+        directions = [axis, first, np.cross(axis, first)]
+        return [{"direction": direction.tolist(), "kind": "localized" if k == 0 else "delocalized",
+                 "note": "N₂O 末端的 σ 孤電子對。" if k == 0 else "此 Lewis 電子對參與離域 π 系統。"}
+                for k, direction in enumerate(directions[:count])]
     spec = _teaching_spec(mol)
     if spec and i == spec["center"] and spec["loneDirections"]:
         # Fit the ideal electron-domain frame to the current bond directions.
@@ -1077,11 +1158,11 @@ def _resonance_metadata(mol, atoms):
     reference = _reference_spec(mol)
     template = _teaching_spec(mol)
     center_index = None
-    if reference and reference["name"] in {"NO₂", "SO₂"}:
+    if reference and reference["name"] in {"NO₂", "SO₂", "ClO₂⁻"}:
         center_index = reference["center"]
     elif template:
         center = mol.GetAtomWithIdx(template["center"])
-        if center.GetSymbol() in {"S", "P"} and all(a.GetSymbol() == "O" for a in center.GetNeighbors()):
+        if center.GetSymbol() in {"S", "P", "Cl", "Br"} and all(a.GetSymbol() == "O" for a in center.GetNeighbors()):
             center_index = center.GetIdx()
     if center_index is not None:
         # RDKit need not treat P/S oxoanions as conjugated. Equivalent terminal
@@ -1090,30 +1171,62 @@ def _resonance_metadata(mol, atoms):
         center = mol.GetAtomWithIdx(center_index)
         edges = [(a.GetIdx(), mol.GetBondBetweenAtoms(center_index, a.GetIdx()).GetIdx())
                  for a in center.GetNeighbors()]
-        assignments = [(source["bondOrders"][b], source["atomCharges"][a], source["lonePairCounts"][a])
+        assignments = [(source["bondOrders"][b], source["atomCharges"][a], source["lonePairCounts"][a], source["radicalCounts"][a])
                        for a, b in edges]
-        for perm in sorted(set(itertools.permutations(assignments))):
-            if list(perm) == assignments:
-                continue
-            state = {key: list(values) for key, values in source.items()}
-            for (atom_id, bond_id), (order, charge, pairs) in zip(edges, perm):
-                state["bondOrders"][bond_id] = order
-                state["atomCharges"][atom_id] = charge
-                state["lonePairCounts"][atom_id] = pairs
-            states.append(state)
-        isotopes = {mol.GetAtomWithIdx(a).GetIsotope() for a, _ in edges}
-        for isotope in sorted(isotopes):
-            equiv = [(a, b) for a, b in edges if mol.GetAtomWithIdx(a).GetIsotope() == isotope]
-            if len(equiv) > 1:
-                result["equivalentBondGroups"].append({
-                    "bondIds": sorted(b for _, b in equiv), "atomIds": sorted([center_index]+[a for a, _ in equiv]),
-                    "order": sum(order for order, _, _ in assignments)/len(assignments),
-                    "basis": "equivalent-terminal-oxygens",
-                })
-        result["note"] = "等價末端氧可交換所畫的 Lewis 單／雙鍵與形式電荷。所示貢獻式保留輸入的中心原子電荷，平均鍵級僅供繪圖。"
+        # Keep the actual input form. Use the same named family to draw the
+        # hybrid even when a user supplied an alternative octet convention.
+        families = [assignments]
+        if not (reference and reference.get("unpaired")):
+            double_count = {("S", 2, 0): 1, ("S", 3, 0): 3, ("S", 3, -2): 1,
+                            ("S", 4, -2): 2, ("P", 4, -3): 1, ("Cl", 2, -1): 1,
+                            ("Cl", 3, -1): 2, ("Br", 3, -1): 2}[
+                                center.GetSymbol(), len(edges), Chem.GetFormalCharge(mol)]
+            families.append([(2., 0, 2, 0)] * double_count + [(1., -1, 3, 0)] * (len(edges) - double_count))
+        for family in families:
+            for perm in sorted(set(itertools.permutations(family))):
+                state = {key: list(values) for key, values in source.items()}
+                for (atom_id, bond_id), (order, charge, pairs, radicals) in zip(edges, perm):
+                    state["bondOrders"][bond_id] = order
+                    state["atomCharges"][atom_id] = charge
+                    state["lonePairCounts"][atom_id] = pairs
+                    state["radicalCounts"][atom_id] = radicals
+                state["atomCharges"][center_index] = Chem.GetFormalCharge(mol) - sum(item[1] for item in perm)
+                if state not in states:
+                    states.append(state)
+        result["equivalentBondGroups"].append({
+            "bondIds": sorted(b for _, b in edges), "atomIds": sorted([center_index]+[a for a, _ in edges]),
+            "terminalAtomIds": sorted(a for a, _ in edges),
+            "order": sum(item[0] for item in families[-1])/len(edges), "basis": "equivalent-terminal-oxygens",
+        })
+        result["note"] = (f"離域圖以 {sum(item[0] == 2 for item in families[-1])} 條雙鍵在 {len(edges)} 個末端氧間"
+                          "交換的 Lewis 式為繪圖約定。平均鍵級不代表實測鍵級或共振權重。")
+        if not (reference and reference.get("unpaired")):
+            result["note"] += "離域圖只畫這組寫法共有的末端氧孤電子對。各 Lewis 式的形式電荷與完整電子對可切換查看。"
         return result
     if reference and reference.get("unpaired"):
         result["note"] = "開殼層物種：保留一個 Lewis 電子計數式，不推測開殼層 π 電子雲或共振權重；基態自旋另見電子組態。"
+        return result
+    if reference and reference["name"] == "N₂O":
+        center_index = reference["center"]
+        center = mol.GetAtomWithIdx(center_index)
+        ends = {a.GetSymbol(): a.GetIdx() for a in center.GetNeighbors()}
+        bonds = {s: mol.GetBondBetweenAtoms(center_index, i).GetIdx() for s, i in ends.items()}
+        for nn, no in [(3, 1), (2, 2), (1, 3)]:
+            state = {key: list(values) for key, values in source.items()}
+            for symbol, order, neutral_valence in [("N", nn, 3), ("O", no, 2)]:
+                state["bondOrders"][bonds[symbol]] = float(order)
+                state["atomCharges"][ends[symbol]] = order - neutral_valence
+                state["lonePairCounts"][ends[symbol]] = 4 - order
+            if state not in states:
+                states.append(state)
+        result["linearPiCenter"] = center_index
+        # NIST orbital occupations: 1π⁴2π⁴. Each transverse plane accounts
+        # for four electrons, including the nonbonding contribution.
+        result["groups"] = [{"id": k, "atomIds": [ends["N"], center_index, ends["O"]],
+                             "bondIds": list(bonds.values()), "piElectrons": 4, "equivalentBondGroups": []}
+                            for k in range(2)]
+        result["note"] = "線形 N₂O 的兩個互相垂直的 π 系統各含 4 個電子，包含非鍵結成分。離域圖以單線標示 σ 骨架，可開啟 π 軌域檢視方向。"
+        result["referenceUrl"] = "https://physics.nist.gov/cgi-bin/Ionization/table.pl?ionization=N2O"
         return result
     if not any(b.GetIsConjugated() for b in mol.GetBonds()):
         return result
@@ -1150,7 +1263,7 @@ def _resonance_metadata(mol, atoms):
         return result  # A partial list cannot establish balanced assignments.
 
     # Neutralize only conjugated atoms and normalize only conjugated bonds in a
-    # temporary graph. Explicit hydrogens, isotopes, substituents and remote
+    # temporary graph. Explicit hydrogens, substituents and remote
     # stereochemistry remain, so carboxylic OH and carbonyl O are not equivalent.
     normalized = Chem.RWMol(mol)
     # The serialized molecule contains explicit H vertices. Once a C=O bond
@@ -1158,6 +1271,9 @@ def _resonance_metadata(mol, atoms):
     # implicit H on O and distinguish it from the original O- endpoint.
     for atom in normalized.GetAtoms():
         atom.SetNoImplicit(True)
+        # Mass labels survive in the molecule and Lewis structures. They do
+        # not localize a resonance double bond in the electronic drawing.
+        atom.SetIsotope(0)
     for group in result["groups"]:
         for i in group["atomIds"]:
             a = normalized.GetAtomWithIdx(i)
@@ -1219,6 +1335,11 @@ def _graph(mol):
               "aromatic": a.GetIsAromatic(), "chiralTag": int(a.GetChiralTag()),
               "explicitHs": a.GetNumExplicitHs(), "noImplicit": a.GetNoImplicit(), "isotope": a.GetIsotope()}
              for a in editable.GetAtoms()]
+    for data in atoms:
+        source = mol.GetAtomWithIdx(data["id"])
+        if source.HasProp("_ProjectExplicitHs"):
+            data["explicitHs"] = source.GetIntProp("_ProjectExplicitHs")
+            data["noImplicit"] = source.GetBoolProp("_ProjectNoImplicit")
     bonds = [{"id": b.GetIdx(), "a": source_id[b.GetBeginAtomIdx()], "b": source_id[b.GetEndAtomIdx()],
               "order": b.GetBondTypeAsDouble(), "stereo": int(b.GetStereo()),
               "stereoAtoms": [source_id[i] for i in b.GetStereoAtoms()], "bondDir": int(b.GetBondDir())}
@@ -1243,10 +1364,22 @@ def _restore_stereo_scope(mol, graph):
     try:
         if atom_signature(actual["atoms"]) != atom_signature(graph["atoms"]) or bond_signature(actual["bonds"]) != bond_signature(graph["bonds"]):
             raise ChemistryError("專案的立體化學中繼資料與 MOL 連接關係不一致，請重新匯入完整專案。")
-        reference = _read_graph(graph)
+        # Older graph formats may omit hydrogen policy. Use the MOL-derived
+        # defaults for missing fields, preserving every policy that was saved.
+        actual_atoms = {a["id"]: a for a in actual["atoms"]}
+        project_atoms = [{**{key: actual_atoms[int(data["id"])][key] for key in ("explicitHs", "noImplicit")},
+                          **data} for data in graph["atoms"]]
+        reference = _read_graph({**graph, "atoms": project_atoms})
+        expanded = Chem.AddHs(reference)
         index = {int(a["id"]): i for i, a in enumerate(graph["atoms"])}
-        for data in graph["atoms"]:
+        for data in project_atoms:
             atom = mol.GetAtomWithIdx(int(data["id"]))
+            ref_atom = expanded.GetAtomWithIdx(index[atom.GetIdx()])
+            if sorted(n.GetIsotope() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1) != sorted(
+                    n.GetIsotope() for n in ref_atom.GetNeighbors() if n.GetAtomicNum() == 1):
+                raise ChemistryError("專案的氫原子數與 MOL 不一致，請重新匯入完整專案。")
+            atom.SetIntProp("_ProjectExplicitHs", int(data["explicitHs"]))
+            atom.SetBoolProp("_ProjectNoImplicit", bool(data["noImplicit"]))
             if not int(data.get("chiralTag", 0)):
                 atom.SetChiralTag(Chem.ChiralType.CHI_UNSPECIFIED)
                 if atom.HasProp("_CIPCode"):
@@ -1278,7 +1411,7 @@ def _restore_stereo_scope(mol, graph):
 
 
 def _stereo_warnings(mol):
-    warnings = []
+    warnings = [mol.GetProp("_IgnoredStereo")] if mol.HasProp("_IgnoredStereo") else []
     unspecified_atoms = [idx + 1 for idx, label in Chem.FindMolChiralCenters(mol, includeUnassigned=True, useLegacyImplementation=False) if label == "?"]
     if unspecified_atoms:
         warnings.append("原子 " + "、".join(map(str, unspecified_atoms)) + " 有未指定的四面體立體中心；目前僅呈現其中一個可能構型，請以 @／@@ 或具立體資訊的 MOL 明確指定。")
@@ -1297,13 +1430,12 @@ def _serialize(mol, records, method, warnings=None):
     records = sorted(records, key=lambda r: r["energy"] if r["energy"] is not None else float("inf"))
     active_id = records[0]["confId"]
     conf = mol.GetConformer(active_id)
-    positions = np.array(conf.GetPositions())
-    # Centering is applied equally to every conformer; no graph/stereo operation.
-    for c in mol.GetConformers():
-        pos = np.array(c.GetPositions())
-        pos -= pos.mean(axis=0)
-        for i, v in enumerate(pos):
-            c.SetAtomPosition(i, Point3D(*map(float, v)))
+    if not mol.HasProp("_InputCoordinateFrame"):
+        for c in mol.GetConformers():
+            pos = np.array(c.GetPositions())
+            pos -= pos.mean(axis=0)
+            for i, v in enumerate(pos):
+                c.SetAtomPosition(i, Point3D(*map(float, v)))
     positions = np.array(conf.GetPositions())
     kekule = Chem.Mol(mol)
     Chem.Kekulize(kekule, clearAromaticFlags=False)
@@ -1341,6 +1473,11 @@ def _serialize(mol, records, method, warnings=None):
     special_geometry = _is_co2(mol) or _is_ozone(mol) or _teaching_spec(mol) or _reference_spec(mol) or _is_isolated_ion(mol)
     base_notice = "孤電子對葉瓣僅示意 Lewis 電子計數與局部方向，並非電子密度；參考／理想幾何亦不代表溶液或所有溫度條件下的結構。" if special_geometry else BASE_WARNING
     notice = [base_notice] + (warnings or []) + _stereo_warnings(mol)
+    if (mol.GetNumAtoms() == 4 and mol.GetNumBonds() == 3 and
+            sorted((a.GetSymbol(), a.GetDegree(), a.GetFormalCharge()) for a in mol.GetAtoms()) ==
+            [("H", 1, 0), ("H", 1, 0), ("O", 2, 0), ("O", 2, 0)]):
+        notice.append("H₂O₂ 的力場二面角僅供估計。NIST 收錄的 1962 年內座標給出 H–O–O–H 119.8°，"
+                      "另一研究在偶極矩分析採用平衡角 111.5°。資料：https://cccbdb.nist.gov/exp2x.asp?casno=7722841&charge=0")
     if mol.HasProp("_StereoFromImport"):
         notice.append("此 MOL 未附原始立體指定中繼資料；立體標記可能由檔案三維座標推導，請核對是否符合原先意圖。")
     if "UFF" in method:
@@ -1354,10 +1491,13 @@ def _serialize(mol, records, method, warnings=None):
     if any(a.GetAtomicNum() in {15,16,17,35,53} and a.GetTotalValence() > 4 for a in mol.GetAtoms()):
         notice.append("含超價主族中心：力場可能無法充分描述電子結構，孤電子對方向僅作示意；精確構型需量子化學或實驗資料確認。")
     smiles = Chem.MolToSmiles(_without_hydrogens(mol), isomericSmiles=True)
+    resonance = _resonance_metadata(mol, atoms)
+    if resonance.get("linearPiCenter") is not None or any(g["basis"] == "equivalent-terminal-oxygens" for g in resonance["equivalentBondGroups"]):
+        notice.append(resonance["note"])
     return {"smiles": smiles, "formula": rdMolDescriptors.CalcMolFormula(mol), **_formula_metadata(mol),
             "mass": round(Descriptors.MolWt(mol), 4), "charge": Chem.GetFormalCharge(mol),
             "atoms": atoms, "bonds": bonds, "conformers": conformers, "activeConformer": 0,
-            "resonance": _resonance_metadata(mol, atoms),
+            "resonance": resonance,
             "method": method, "energy": conformers[0]["energy"],
             "molblock": Chem.MolToMolBlock(mol, confId=active_id), "xyz": Chem.MolToXYZBlock(mol, confId=active_id),
             "warnings": list(dict.fromkeys(notice)), "graph": _graph(mol),
@@ -1369,6 +1509,13 @@ def _serialize(mol, records, method, warnings=None):
 def _generate(payload):
     mol = _read(payload)
     return _generate_molecule(mol, payload)
+
+
+def _coordinate_isomer(mol, conf_id):
+    probe = Chem.Mol(mol)
+    Chem.RemoveStereochemistry(probe)
+    Chem.AssignStereochemistryFrom3D(probe, confId=conf_id, replaceExistingTags=True)
+    return Chem.MolToSmiles(probe, isomericSmiles=True)
 
 
 def _generate_molecule(mol, payload, verify_stereo=None):
@@ -1397,12 +1544,24 @@ def _generate_molecule(mol, payload, verify_stereo=None):
         raise ChemistryError("無法產生滿足立體與距離限制的 3D 構象；請檢查環張力、鍵級和立體標記。")
     records = []
     name = ""
+    has_unspecified = any(str(s.type) in {"Atom_Tetrahedral", "Bond_Double"} and str(s.specified) != "Specified"
+                          for s in Chem.FindPotentialStereo(mol))
+    selected_isomer = None
     for cid in ids:
         ff, name = _field(mol, cid)
         status = ff.Minimize(maxIts=1200)
         _verify_stereo_geometry(mol, cid, verify_stereo)
+        if has_unspecified:
+            isomer = _coordinate_isomer(mol, cid)
+            if selected_isomer is None:
+                selected_isomer = isomer
+            elif isomer != selected_isomer:
+                continue
         records.append({"confId": cid, "energy": ff.CalcEnergy(), "converged": status == 0})
-    return _serialize(mol, records, f"ETKDGv3 + {name}", [f"由 {samples} 次構象取樣取得 {len(records)} 個候選；最低能量僅限於本次搜尋，不保證全域最低能量。"])
+    notes = [f"由 {samples} 次構象取樣取得 {len(records)} 個候選；最低能量僅限於本次搜尋，不保證全域最低能量。"]
+    if has_unspecified:
+        notes.append("輸入含未指定構型。清單僅比較第一個取樣構型的構象；不同立體異構物不參與能量排名。")
+    return _serialize(mol, records, f"ETKDGv3 + {name}", notes)
 
 
 def _existing(payload, action):
@@ -1415,8 +1574,11 @@ def _existing(payload, action):
     input_positions = np.array(conf.GetPositions())
     if not np.isfinite(input_positions).all():
         raise ChemistryError("輸入的 3D 座標含無效數值，請重新匯出有效的 MOL 檔案。")
-    if any(np.linalg.norm(input_positions[b.GetBeginAtomIdx()] - input_positions[b.GetEndAtomIdx()]) < .05 for b in mol.GetBonds()):
-        raise ChemistryError("輸入座標包含重疊或幾乎重疊的成鍵原子；請由 SMILES／連接表重新生成三維幾何。")
+    left, right = np.triu_indices(mol.GetNumAtoms(), k=1)
+    coincident = np.flatnonzero(np.linalg.norm(input_positions[left] - input_positions[right], axis=1) < .05)
+    if len(coincident):
+        i = coincident[0]
+        raise ChemistryError(f"輸入座標中的原子 {left[i]+1} 與 {right[i]+1} 重疊或幾乎重疊（距離小於 0.05 Å）；請修正座標或重新生成三維幾何。")
     if _is_co2(mol) and action in {"analyze", "optimize"}:
         return _co2_model(mol, preserve=action == "analyze")
     if _is_ozone(mol) and action in {"analyze", "optimize"}:

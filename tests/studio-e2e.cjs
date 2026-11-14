@@ -283,7 +283,7 @@ async function main() {
       await button('顯示設定').click();for(const name of ['空間填充','細棒模型','球棍模型']){const option=page.locator('.representation-options button').filter({hasText:name});await option.click();await expect(option).toHaveAttribute('aria-pressed','true');}
       for(const name of ['氫原子','孤電子對','π 軌域示意','原子標籤']){const item=page.getByLabel(name,{exact:true}),old=await item.isChecked();await item.setChecked(!old);await expect(item).toBeChecked({checked:!old});await item.setChecked(old);}
       for(const name of ['正視','俯視','側視','置中模型'])await button(name).click();
-      await button('分子資訊').click();await expect(page.locator('.inspector')).toContainText('分子量');await expect(page.locator('.inspector')).toContainText('孤電子對');await page.locator('.inspector details').filter({hasText:'計算方法與注意事項'}).locator('summary').click();await expect(page.locator('.inspector')).toContainText(/ETKDG|MMFF|UFF/);
+      await button('分子資訊').click();await expect(page.locator('.inspector')).toContainText('莫耳質量');await expect(page.locator('.inspector')).toContainText('孤電子對');await page.locator('.inspector details').filter({hasText:'計算方法與注意事項'}).locator('summary').click();await expect(page.locator('.inspector')).toContainText(/ETKDG|MMFF|UFF/);
       await closePanel();await button('方法與使用說明').click();await expect(page.getByRole('dialog')).toContainText('適用範圍');await button('關閉說明').click();
     });
     await step('large text persists and 1440/1024/390px layouts remain usable without overflow',async()=>{

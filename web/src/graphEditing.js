@@ -25,6 +25,7 @@ export function touchGraph(graph, ids, consume = 0) {
 export function replaceAtom(graph, id, element, charge, hydrogenMode) {
   const atom = graph.atoms.find(a => a.id === id);
   if (!atom) throw new Error('氫原子依價態自動補足');
+  const changesIdentity = atom.element !== element || (atom.charge || 0) !== charge;
   // An isotope belongs to one element. Replacing 13C with N must not silently
   // request radioactive 13N; charge-only changes preserve the selected isotope.
   if (atom.element !== element) {
@@ -45,5 +46,19 @@ export function replaceAtom(graph, id, element, charge, hydrogenMode) {
       atom.noImplicit = true;
     }
   }
-  touchGraph(graph, [id]);
+  // Explicit/automatic H is an editing policy. Keep the stereochemical
+  // descriptors on the submitted graph and let the engine check the valence.
+  if (changesIdentity) touchGraph(graph, [id]);
+}
+
+export function appendGraphAtom(source, parent, element, order) {
+  const graph = structuredClone(source);
+  if (!graph.atoms.some(atom => atom.id === parent)) throw new Error('請選擇已存在的連接原子。');
+  if (graph.atoms.length >= 200 || (element !== 'H' && graph.atoms.filter(atom => atom.element !== 'H').length >= 80))
+    throw new Error('結構上限為 80 個重原子、200 個總原子。');
+  const id = Math.max(...graph.atoms.map(atom => atom.id)) + 1;
+  touchGraph(graph, [parent], order);
+  graph.atoms.push({id, element, charge:0});
+  graph.bonds.push({a:parent, b:id, order});
+  return graph;
 }
